@@ -1,4 +1,4 @@
--- Copyright 2011-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
 -- authors: Lomtik Software (J. Winwood & John Labenski)
 -- Luxinia Dev (Eike Decker & Christoph Kubisch)
 ---------------------------------------------------------
@@ -440,7 +440,9 @@ function findReplace:ProcInFiles(startdir,mask,subdirs)
     text = text:gsub("%w",function(s) return "["..s:lower()..s:upper().."]" end)
   end
 
-  local files = coroutine.wrap(function() FileSysGetRecursive(startdir, subdirs, mask, {yield = true, folder = false}) end)
+  local files = coroutine.wrap(function()
+      FileSysGetRecursive(startdir, subdirs, mask, {yield = true, folder = false, skipbinary = true})
+    end)
   while true do
     local file = files()
     if not file then break end

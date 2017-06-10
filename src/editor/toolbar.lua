@@ -1,6 +1,8 @@
--- Copyright 2014-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2014-17 Paul Kulchenko, ZeroBrane LLC
 
 local TR = function(...) return ... end
+
+ide.config.toolbar = ide.config.toolbar or {}
 
 ide.config.toolbar.icons = {
   ID.NEW, ID.OPEN, ID.SAVE, ID.SAVEALL, ID.PROJECTDIRFROMFILE, ID.PROJECTDIRCHOOSE,

@@ -1,4 +1,4 @@
--- Copyright 2011-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
 -- Original authors: Lomtik Software (J. Winwood & John Labenski)
 -- Luxinia Dev (Eike Decker & Christoph Kubisch)
 -- Integration with MobDebug
@@ -657,8 +657,7 @@ function debugger:Listen(start)
         or (wxfilepath and wxfilepath:GetFullPath())
 
       if not startfile then
-        displayError(TR("Can't start debugging without an opened file or with the current file not being saved ('%s').")
-          :format(ide.config.default.fullname))
+        displayError(TR("Can't start debugging without an opened file or with the current file not being saved."))
         return debugger:terminate()
       end
 
@@ -1494,7 +1493,7 @@ local function debuggerCreateWatchWindow()
             self:Expand(item)
             local name = self:GetItemName(item)
             if not name then
-              self:SetItemText(item, (self:GetItemText(item):gsub("%{%.%.%.%}", "{}")))
+              self:SetItemText(item, (self:GetItemText(item):gsub(q(MORE), "{}")))
               return
             end
 
@@ -1736,7 +1735,7 @@ end
 local function debuggerMakeFileName(editor)
   return ide:GetDocument(editor):GetFilePath()
   or ide:GetDocument(editor):GetFileName()
-  or ide.config.default.fullname
+  or ide:GetDefaultFileName()
 end
 
 function debugger:breakpointToggle(editor, line, value)

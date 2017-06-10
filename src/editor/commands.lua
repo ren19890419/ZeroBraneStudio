@@ -1,4 +1,4 @@
--- Copyright 2011-14 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
 -- authors: Lomtik Software (J. Winwood & John Labenski)
 -- Luxinia Dev (Eike Decker & Christoph Kubisch)
 ---------------------------------------------------------
@@ -14,7 +14,7 @@ local CURRENT_LINE_MARKER = StylesGetMarker("currentline")
 local CURRENT_LINE_MARKER_VALUE = 2^CURRENT_LINE_MARKER
 
 function NewFile(filename)
-  filename = filename or ide.config.default.fullname
+  filename = filename or ide:GetDefaultFileName()
   local editor = CreateEditor()
   editor:SetupKeywords(GetFileExt(filename))
   local doc = AddEditor(editor, filename)
@@ -41,12 +41,17 @@ end
 
 function LoadFile(filePath, editor, file_must_exist, skipselection)
   filePath = filePath:gsub("%s+$","")
-  filePath = wx.wxFileName(filePath)
-  filePath:Normalize() -- make it absolute and remove all .. and . if possible
-  filePath = filePath:GetFullPath()
 
   -- if the file name is empty or is a directory, don't do anything
   if filePath == '' or wx.wxDirExists(filePath) then return nil end
+
+  filePath = FileNormalizePath(filePath)
+  -- on some Windows versions, normalization doesn't return "original" file name,
+  -- so detect that and use LongPath instead
+  if ide.osname == "Windows" and wx.wxFileExists(filePath)
+  and FileNormalizePath(filePath:upper()) ~= FileNormalizePath(filePath:lower()) then
+    filePath = FileGetLongPath(filePath)
+  end
 
   -- prevent files from being reopened again
   if (not editor) then
@@ -165,8 +170,7 @@ function LoadFile(filePath, editor, file_must_exist, skipselection)
   if doc then -- existing editor; switch to the tab
     notebook:SetSelection(doc:GetTabIndex())
   else -- the editor has not been added to notebook
-    doc = AddEditor(editor, wx.wxFileName(filePath):GetFullName()
-      or ide.config.default.fullname)
+    doc = AddEditor(editor, wx.wxFileName(filePath):GetFullName() or ide:GetDefaultFileName())
   end
   doc.filePath = filePath
   doc.fileName = wx.wxFileName(filePath):GetFullName()

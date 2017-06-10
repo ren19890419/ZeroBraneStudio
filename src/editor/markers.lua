@@ -1,4 +1,4 @@
--- Copyright 2015 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2015-17 Paul Kulchenko, ZeroBrane LLC
 
 local ide = ide
 ide.markers = {
@@ -30,13 +30,13 @@ local function needRefresh(editor)
   resetMarkersTimer()
 end
 
-local function getMarkers(editor)
+local function getMarkers(editor, mtype)
   local edmarkers = {}
   local line = editor:MarkerNext(0, maskall)
   while line ~= wx.wxNOT_FOUND do
     local markerval = editor:MarkerGet(line)
     for markertype, val in pairs(markertypes) do
-      if bit.band(markerval, val) > 0 then
+      if bit.band(markerval, val) > 0 and (not mtype or markertype == mtype) then
         table.insert(edmarkers, {line, markertype})
       end
     end
@@ -71,7 +71,8 @@ local function markersRefresh()
 
       for _, edmarker in ipairs(getMarkers(editor)) do
         local line, markertype = unpack(edmarker)
-        local text = ("%d: %s"):format(line+1, FixUTF8(editor:GetLineDyn(line)))
+        local text = ("%d: %s"):format(line+1,
+          FixUTF8(editor:GetLineDyn(line), function(s) return '\\'..string.byte(s) end))
         ctrl:AppendItem(fileitem, text:gsub("[\r\n]+$",""), image[markertype:upper()])
       end
 
@@ -94,9 +95,15 @@ local function item2editor(item_id)
   end
 end
 
-local function clearAllMarkers(mtype)
-  local allmarkers = markers.settings.markers
-  for filepath, markers in pairs(allmarkers) do
+local function clearAllEditorMarkers(mtype, editor)
+  for _, edmarker in ipairs(getMarkers(editor, mtype)) do
+    local line = unpack(edmarker)
+    editor:MarkerToggle(mtype, line, false)
+  end
+end
+
+local function clearAllProjectMarkers(mtype)
+  for filepath, markers in pairs(markers.settings.markers) do
     if ide:IsProjectSubDirectory(filepath) then
       local doc = ide:FindDocument(filepath)
       local editor = doc and doc:GetEditor()
@@ -127,7 +134,7 @@ local function createMarkersWindow()
   ctrl:SetImageList(markers.imglist)
   ctrl:SetFont(ide.font.fNormal)
 
-  function ctrl:ActivateItem(item_id, toggle)
+  function ctrl:ActivateItem(item_id, marker)
     local itemimage = ctrl:GetItemImage(item_id)
     if itemimage == image.FILE then
       -- activate editor tab
@@ -140,9 +147,8 @@ local function createMarkersWindow()
         if editor then
           local line = tonumber(ctrl:GetItemText(item_id):match("^(%d+):"))
           if line then
-            if toggle then
-              local _ = (itemimage == image.BOOKMARK and editor:BookmarkToggle(line-1, false)
-                or itemimage == image.BREAKPOINT and editor:BreakpointToggle(line-1, false))
+            if marker then
+              editor:MarkerToggle(marker, line-1, false)
               ctrl:Delete(item_id)
               return -- don't activate the editor when the breakpoint is toggled
             end
@@ -161,11 +167,30 @@ local function createMarkersWindow()
     local item_id, flags = ctrl:HitTest(event:GetPosition())
 
     if item_id and item_id:IsOk() and bit.band(flags, mask) > 0 then
-      ctrl:ActivateItem(item_id, bit.band(flags, wx.wxTREE_HITTEST_ONITEMICON) > 0)
+      local marker
+      local itemimage = ctrl:GetItemImage(item_id)
+      if bit.band(flags, wx.wxTREE_HITTEST_ONITEMICON) > 0 then
+        for iname, itype in pairs(image) do
+          if itemimage == itype then marker = iname:lower() end
+        end
+      end
+      ctrl:ActivateItem(item_id, marker)
     else
       event:Skip()
     end
     return true
+  end
+
+  local function clearMarkersInFile(item_id, marker)
+    local editor = item2editor(item_id)
+    local itemimage = ctrl:GetItemImage(item_id)
+    if itemimage ~= image.FILE then
+      local parent = ctrl:GetItemParent(item_id)
+      if parent:IsOk() and ctrl:GetItemImage(parent) == image.FILE then
+        editor = item2editor(parent)
+      end
+    end
+    if editor then clearAllEditorMarkers(marker, editor) end
   end
 
   ctrl:Connect(wx.wxEVT_LEFT_DOWN, activateByPosition)
@@ -183,15 +208,29 @@ local function createMarkersWindow()
         { ID_BOOKMARKTOGGLE, TR("Toggle Bookmark"), TR("Toggle bookmark") },
         { ID_BREAKPOINTTOGGLE, TR("Toggle Breakpoint"), TR("Toggle breakpoint") },
         { },
-        { ID_BOOKMARKCLEAR, TR("Clear Bookmarks In Project")..KSC(ID_BOOKMARKCLEAR) },
-        { ID_BREAKPOINTCLEAR, TR("Clear Breakpoints In Project")..KSC(ID_BREAKPOINTCLEAR) },
+        { ID_BOOKMARKFILECLEAR, TR("Clear Bookmarks In File")..KSC(ID_BOOKMARKFILECLEAR) },
+        { ID_BREAKPOINTFILECLEAR, TR("Clear Breakpoints In File")..KSC(ID_BREAKPOINTFILECLEAR) },
+        { },
+        { ID_BOOKMARKPROJECTCLEAR, TR("Clear Bookmarks In Project")..KSC(ID_BOOKMARKPROJECTCLEAR) },
+        { ID_BREAKPOINTPROJECTCLEAR, TR("Clear Breakpoints In Project")..KSC(ID_BREAKPOINTPROJECTCLEAR) },
       }
-      local activate = function() ctrl:ActivateItem(item_id, true) end
-      menu:Enable(ID_BOOKMARKTOGGLE, ctrl:GetItemImage(item_id) == image.BOOKMARK)
-      menu:Connect(ID_BOOKMARKTOGGLE, wx.wxEVT_COMMAND_MENU_SELECTED, activate)
+      local itemimage = ctrl:GetItemImage(item_id)
 
-      menu:Enable(ID_BREAKPOINTTOGGLE, ctrl:GetItemImage(item_id) == image.BREAKPOINT)
-      menu:Connect(ID_BREAKPOINTTOGGLE, wx.wxEVT_COMMAND_MENU_SELECTED, activate)
+      menu:Enable(ID_BOOKMARKTOGGLE, itemimage == image.BOOKMARK)
+      menu:Connect(ID_BOOKMARKTOGGLE, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function() ctrl:ActivateItem(item_id, "bookmark") end)
+
+      menu:Enable(ID_BREAKPOINTTOGGLE, itemimage == image.BREAKPOINT)
+      menu:Connect(ID_BREAKPOINTTOGGLE, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function() ctrl:ActivateItem(item_id, "breakpoint") end)
+
+      menu:Enable(ID_BOOKMARKFILECLEAR, itemimage == image.BOOKMARK or itemimage == image.FILE)
+      menu:Connect(ID_BOOKMARKFILECLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function() clearMarkersInFile(item_id, "bookmark") end)
+
+      menu:Enable(ID_BREAKPOINTFILECLEAR, itemimage == image.BREAKPOINT or itemimage == image.FILE)
+      menu:Connect(ID_BREAKPOINTFILECLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function() clearMarkersInFile(item_id, "breakpoint") end)
 
       PackageEventHandle("onMenuMarkers", menu, ctrl, event)
 
@@ -219,18 +258,29 @@ local package = ide:AddPackage('core.markers', {
 
       local bmmenu = ide:FindMenuItem(ID_BOOKMARK):GetSubMenu()
       bmmenu:AppendSeparator()
-      bmmenu:Append(ID_BOOKMARKCLEAR, TR("Clear Bookmarks In Project")..KSC(ID_BOOKMARKCLEAR))
+      bmmenu:Append(ID_BOOKMARKFILECLEAR, TR("Clear Bookmarks In File")..KSC(ID_BOOKMARKFILECLEAR))
+      bmmenu:Append(ID_BOOKMARKPROJECTCLEAR, TR("Clear Bookmarks In Project")..KSC(ID_BOOKMARKPROJECTCLEAR))
 
       local bpmenu = ide:FindMenuItem(ID_BREAKPOINT):GetSubMenu()
       bpmenu:AppendSeparator()
-      bpmenu:Append(ID_BREAKPOINTCLEAR, TR("Clear Breakpoints In Project")..KSC(ID_BREAKPOINTCLEAR))
+      bpmenu:Append(ID_BREAKPOINTFILECLEAR, TR("Clear Breakpoints In File")..KSC(ID_BREAKPOINTFILECLEAR))
+      bpmenu:Append(ID_BREAKPOINTPROJECTCLEAR, TR("Clear Breakpoints In Project")..KSC(ID_BREAKPOINTPROJECTCLEAR))
 
-      ide:GetMainFrame():Connect(ID_BOOKMARKCLEAR, wx.wxEVT_COMMAND_MENU_SELECTED, function()
-          clearAllMarkers("bookmark")
+      ide:GetMainFrame():Connect(ID_BOOKMARKFILECLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function()
+          local editor = ide:GetEditor()
+          if editor then clearAllEditorMarkers("bookmark", editor) end
         end)
-      ide:GetMainFrame():Connect(ID_BREAKPOINTCLEAR, wx.wxEVT_COMMAND_MENU_SELECTED, function()
-          clearAllMarkers("breakpoint")
+      ide:GetMainFrame():Connect(ID_BOOKMARKPROJECTCLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function() clearAllProjectMarkers("bookmark") end)
+
+      ide:GetMainFrame():Connect(ID_BREAKPOINTFILECLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function()
+          local editor = ide:GetEditor()
+          if editor then clearAllEditorMarkers("breakpoint", editor) end
         end)
+      ide:GetMainFrame():Connect(ID_BREAKPOINTPROJECTCLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function() clearAllProjectMarkers("breakpoint") end)
     end,
 
     -- save markers; remove tab from the list

@@ -1,4 +1,4 @@
--- Copyright 2011-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
 -- authors: Luxinia Dev (Eike Decker & Christoph Kubisch)
 ---------------------------------------------------------
 
@@ -18,16 +18,20 @@ if islinux then
   local file = io.popen("uname -m")
   if file then
     local machine=file:read("*l")
-    local archtype= { x86_64="x64", armv7l="armhf" }
-    arch = archtype[machine] or "x86"
+    local archtype= {
+      x86_64  = "x64",
+      armv7l  = "armhf",
+      aarch64 = "aarch64",
+    }
+    arch = archtype[machine] or arch
     file:close()
   end
 end
 
 package.cpath = (
-  iswindows and 'bin/?.dll;bin/clibs/?.dll;' or
-  islinux and ('bin/linux/%s/lib?.so;bin/linux/%s/clibs/lib?.so;bin/linux/%s/clibs/?.so;'):format(arch,arch,arch) or
-  --[[isosx]] 'bin/lib?.dylib;bin/clibs/lib?.dylib;bin/clibs/?.dylib;')
+  iswindows and 'bin/clibs/?.dll;' or
+  islinux and ('bin/linux/%s/clibs/lib?.so;bin/linux/%s/clibs/?.so;'):format(arch,arch) or
+  --[[isosx]] 'bin/clibs/lib?.dylib;bin/clibs/?.dylib;')
     .. package.cpath
 package.path  = 'lualibs/?.lua;lualibs/?/?.lua;lualibs/?/init.lua;lualibs/?/?/?.lua;lualibs/?/?/init.lua;'
               .. package.path
@@ -43,168 +47,22 @@ dofile "src/util.lua"
 -- IDE
 --
 local pendingOutput = {}
+local config = dofile("src/config.lua")
+config.path = {
+  projectdir = "",
+  app = nil,
+}
 ide = {
   MODPREF = "* ",
   MAXMARGIN = wxstc.wxSTC_MAX_MARGIN or 4,
   ANYMARKERMASK = 2^24-1,
-  config = {
-    path = {
-      projectdir = "",
-      app = nil,
-    },
-    editor = {
-      autoactivate = false,
-      foldcompact = true,
-      checkeol = true,
-      saveallonrun = false,
-      caretline = true,
-      commentlinetoggle = false,
-      showfncall = false,
-      autotabs = false,
-      usetabs  = false,
-      tabwidth = 2,
-      usewrap = true,
-      wrapmode = wxstc.wxSTC_WRAP_WORD,
-      calltipdelay = 500,
-      smartindent = true,
-      fold = true,
-      autoreload = true,
-      indentguide = true,
-      backspaceunindent = true,
-      linenumber = true,
-    },
-    debugger = {
-      allowediting = false,
-      verbose = false,
-      hostname = nil,
-      ignorecase = false,
-      linetobreakpoint = false,
-      numformat = "%.16g",
-      port = nil,
-      runonstart = nil,
-      redirect = nil,
-      maxdatalength = 256,
-      maxdatanum = 128,
-      maxdatalevel = 3,
-      refuseonconflict = true,
-    },
-    default = {
-      name = 'untitled',
-      fullname = 'untitled.lua',
-      interpreter = 'luadeb',
-    },
-    outputshell = {
-      usewrap = true,
-    },
-    filetree = {
-      mousemove = true,
-      showchanges = true,
-    },
-    outline = {
-      activateonclick = true,
-      jumptocurrentfunction = true,
-      showanonymous = '~',
-      showcurrentfunction = true,
-      showcompact = false,
-      showflat = false,
-      showmethodindicator = false,
-      showonefile = false,
-      sort = false,
-    },
-    commandbar = {
-      prefilter = 250, -- number of records after which to apply filtering
-      maxitems = 30, -- max number of items to show
-      maxlines = 8, -- max number of lines to show
-      width = 0.35, -- <1 -- size in proportion to the app frame width; >=1 -- size in pixels
-      showallsymbols = true, -- show all symbols in a project
-    },
-    staticanalyzer = {
-      infervalue = false, -- run more detailed static analysis; off by default as it's a slower mode
-    },
-    search = {
-      autocomplete = true,
-      contextlinesbefore = 2,
-      contextlinesafter = 2,
-      showaseditor = false,
-      zoom = 0,
-      autohide = false,
-    },
-    print = {
-      magnification = -3,
-      wrapmode = wxstc.wxSTC_WRAP_WORD,
-      colourmode = wxstc.wxSTC_PRINT_BLACKONWHITE,
-      header = "%S\t%D\t%p/%P",
-      footer = nil,
-    },
-    toolbar = {
-      icons = {},
-      iconmap = {},
-      iconsize = nil, -- icon size is set dynamically unless specified in the config
-    },
-
-    keymap = {},
-    imagemap = {
-      ['VALUE-MCALL'] = 'VALUE-SCALL',
-    },
-    messages = {},
-    language = "en",
-
-    styles = nil,
-    stylesoutshell = nil,
-
-    autocomplete = true,
-    autoanalyzer = true,
-    acandtip = {
-      startat = 2,
-      shorttip = true,
-      nodynwords = true,
-      ignorecase = false,
-      fillups = nil,
-      symbols = true,
-      droprest = true,
-      strategy = 2,
-      width = 60,
-      maxlength = 450,
-      warning = true,
-    },
-    arg = {}, -- command line arguments
-    api = {}, -- additional APIs to load
-
-    format = { -- various formatting strings
-      menurecentprojects = "%f | %i",
-      apptitle = "%T - %F",
-    },
-
-    activateoutput = true, -- activate output/console on Run/Debug/Compile
-    unhidewindow = false, -- to unhide a gui window
-    projectautoopen = true,
-    autorecoverinactivity = 10, -- seconds
-    outlineinactivity = 0.250, -- seconds
-    markersinactivity = 0.500, -- seconds
-    symbolindexinactivity = 2, -- seconds
-    filehistorylength = 20,
-    projecthistorylength = 20,
-    commandlinehistorylength = 10,
-    bordersize = 3,
-    savebak = false,
-    singleinstance = false,
-    singleinstanceport = 0xe493,
-    showmemoryusage = false,
-    showhiddenfiles = false,
-    hidpi = false, -- HiDPI/Retina display support
-    hotexit = false,
-    imagetint = nil,
-    markertint = true,
-    menuicon = true,
-    -- file exclusion lists
-    excludelist = {".svn/", ".git/", ".hg/", "CVS/", "*.pyc", "*.pyo", "*.exe", "*.dll", "*.obj","*.o", "*.a", "*.lib", "*.so", "*.dylib", "*.ncb", "*.sdf", "*.suo", "*.pdb", "*.idb", ".DS_Store", "*.class", "*.psd", "*.db"},
-    binarylist = {"*.jpg", "*.jpeg", "*.png", "*.gif", "*.ttf", "*.tga", "*.dds", "*.ico", "*.eot", "*.pdf", "*.swf", "*.jar", "*.zip", ".gz", ".rar"},
-  },
+  config = config,
   specs = {
     none = {
       sep = "\1",
     }
   },
+  messages = {},
   tools = {},
   iofilters = {},
   interpreters = {},
@@ -288,6 +146,12 @@ if not wx.wxMOD_SHIFT then wx.wxMOD_SHIFT = 0x04 end
 if not wx.wxDIR_NO_FOLLOW then wx.wxDIR_NO_FOLLOW = 0x10 end
 if not wxaui.wxAUI_TB_PLAIN_BACKGROUND then wxaui.wxAUI_TB_PLAIN_BACKGROUND = 2^8 end
 if not wx.wxNOT_FOUND then wx.wxNOT_FOUND = -1 end
+if not wx.wxEXEC_NOEVENTS then wx.wxEXEC_NOEVENTS = 16 end
+if not wx.wxEXEC_HIDE_CONSOLE then wx.wxEXEC_HIDE_CONSOLE = 32 end
+if not wx.wxEXEC_BLOCK then wx.wxEXEC_BLOCK = wx.wxEXEC_SYNC + wx.wxEXEC_NOEVENTS end
+
+-- it's an interface constant and is not public in wxlua, so add it
+if not wxstc.wxSTC_SETLEXERLANGUAGE then wxstc.wxSTC_SETLEXERLANGUAGE = 4006 end
 
 if not setfenv then -- Lua 5.2
   -- based on http://lua-users.org/lists/lua-l/2010-06/msg00314.html
@@ -430,16 +294,13 @@ local function setLuaPaths(mainpath, osname)
 
   ide.osclibs = -- keep the list to use for various Lua versions
     osname == "Windows" and table.concat({
-        mainpath.."bin/?.dll",
         mainpath.."bin/clibs/?.dll",
       },";") or
     osname == "Macintosh" and table.concat({
-        mainpath.."bin/lib?.dylib",
         mainpath.."bin/clibs/?.dylib",
         mainpath.."bin/clibs/lib?.dylib",
       },";") or
     osname == "Unix" and table.concat({
-        mainpath..("bin/linux/%s/lib?.so"):format(arch),
         mainpath..("bin/linux/%s/clibs/?.so"):format(arch),
         mainpath..("bin/linux/%s/clibs/lib?.so"):format(arch),
       },";") or
@@ -667,11 +528,11 @@ do
 
   local sep = GetPathSeparator()
   if ide.config.language then
-    LoadLuaFileExt(ide.config.messages, "cfg"..sep.."i18n"..sep..ide.config.language..".lua")
+    LoadLuaFileExt(ide.messages, "cfg"..sep.."i18n"..sep..ide.config.language..".lua")
   end
-  -- always load 'en' as it's requires as a fallback for pluralization
+  -- always load 'en' as it's required as a fallback for pluralization
   if ide.config.language ~= 'en' then
-    LoadLuaFileExt(ide.config.messages, "cfg"..sep.."i18n"..sep.."en.lua")
+    LoadLuaFileExt(ide.messages, "cfg"..sep.."i18n"..sep.."en.lua")
   end
 end
 

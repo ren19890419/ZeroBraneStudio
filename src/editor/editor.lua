@@ -1,4 +1,4 @@
--- Copyright 2011-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
 -- authors: Lomtik Software (J. Winwood & John Labenski)
 -- Luxinia Dev (Eike Decker & Christoph Kubisch)
 ---------------------------------------------------------
@@ -683,14 +683,20 @@ function CreateEditor(bare)
   -- populate cache with Ctrl-<letter> combinations for workaround on Linux
   -- http://wxwidgets.10942.n7.nabble.com/Menu-shortcuts-inconsistentcy-issue-td85065.html
   for id, shortcut in pairs(ide.config.keymap) do
-    local key = shortcut:match('^Ctrl[-+](.)$')
-    if key then editor.ctrlcache[key:byte()] = id end
+    if shortcut:match('%f[%w]Ctrl[-+]') then
+      local mask = (wx.wxMOD_CONTROL
+        + (shortcut:match('%f[%w]Alt[-+]') and wx.wxMOD_ALT or 0)
+        + (shortcut:match('%f[%w]Shift[-+]') and wx.wxMOD_SHIFT or 0)
+      )
+      local key = shortcut:match('[-+](.)$')
+      if key then editor.ctrlcache[key:byte()..mask] = id end
+    end
   end
 
   -- populate editor keymap with configured combinations
-  for _, map in ipairs(edcfg.keymap or {}) do
-    local key, mod, cmd, os = unpack(map)
-    if not os or os == ide.osname then
+  for _, map in pairs(edcfg.keymap or {}) do
+    local key, mod, cmd, osname = unpack(map)
+    if not osname or osname == ide.osname then
       if cmd then
         editor:CmdKeyAssign(key, mod, cmd)
       else
@@ -1354,9 +1360,9 @@ function CreateEditor(bare)
       and (mod == wx.wxMOD_CONTROL or mod == (wx.wxMOD_CONTROL + wx.wxMOD_SHIFT)) then
         addOneLine(editor, mod == (wx.wxMOD_CONTROL + wx.wxMOD_SHIFT) and -1 or 0)
       elseif ide.osname == "Unix" and ide.wxver >= "2.9.5"
-      and mod == wx.wxMOD_CONTROL and editor.ctrlcache[keycode] then
+      and editor.ctrlcache[keycode..mod] then
         ide.frame:AddPendingEvent(wx.wxCommandEvent(
-          wx.wxEVT_COMMAND_MENU_SELECTED, editor.ctrlcache[keycode]))
+          wx.wxEVT_COMMAND_MENU_SELECTED, editor.ctrlcache[keycode..mod]))
       else
         if ide.osname == 'Macintosh' and mod == wx.wxMOD_META then
           return -- ignore a key press if Command key is also pressed
@@ -1620,30 +1626,6 @@ function AddEditor(editor, name)
   end
 end
 
-function GetSpec(ext,forcespec)
-  local spec = forcespec
-
-  -- search proper spec
-  -- allow forcespec for "override"
-  if ext and not spec then
-    for _,curspec in pairs(ide.specs) do
-      local exts = curspec.exts
-      if (exts) then
-        for _,curext in ipairs(exts) do
-          if (curext == ext) then
-            spec = curspec
-            break
-          end
-        end
-        if (spec) then
-          break
-        end
-      end
-    end
-  end
-  return spec
-end
-
 local lexlpegmap = {
   text = {"identifier"},
   lexerdef = {"nothing"},
@@ -1671,7 +1653,7 @@ local function setLexLPegLexer(editor, lexername)
   package.path = MergeFullPath(lpath, "?.lua") -- update `package.path` to reference `lexers/`
   local ok, lex = pcall(require, "lexer")
   package.path = ppath -- restore the original `package.path`
-  if not ok then return nil, "Can't find LexLPeg lexer components." end
+  if not ok then return nil, "Can't load LexLPeg lexer components: "..lex end
 
   -- if the requested lexer is a dynamically registered one, then need to create a file for it,
   -- as LexLPeg lexers are loaded in a separate Lua state, which this process has no contol over.
@@ -1695,14 +1677,15 @@ local function setLexLPegLexer(editor, lexername)
   local lexpath = package.searchpath("lexlpeg", ide.osclibs)
   if not lexpath then return nil, "Can't find LexLPeg lexer." end
 
-  if not pcall(require, "lpeg") then return nil, "Can't load LexLPeg lexer components." end
   do
     local err = wx.wxSysErrorCode()
     local _ = wx.wxLogNull() -- disable error reporting; will report as needed
-    editor:LoadLexerLibrary(lexpath)
+    local loaded = pcall(function() editor:LoadLexerLibrary(lexpath) end)
+    if not loaded then return nil, "Can't load LexLPeg library." end
     -- the error code may be non-zero, but still needs to be different from the previous one
     -- as it may report non-zero values on Windows (for example, 1447) when no error is generated
-    if wx.wxSysErrorCode() > 0 and wx.wxSysErrorCode() ~= err then return nil, wx.wxSysErrorMsg() end
+    local newerr = wx.wxSysErrorCode()
+    if newerr > 0 and newerr ~= err then return nil, wx.wxSysErrorMsg() end
   end
 
   if dynlexer then
@@ -1717,10 +1700,17 @@ local function setLexLPegLexer(editor, lexername)
     -- update lpath to point to the temp folder
     lpath = tmppath
   end
+
+  -- temporarily set the enviornment variable to load the new lua state with proper paths
+  -- do here as the Lua state in LexLPeg parser is initialized furing `SetLexerLanguage` call
+  local ok, cpath = wx.wxGetEnv("LUA_CPATH")
+  if ok then wx.wxSetEnv("LUA_CPATH", ide.osclibs) end
   editor:SetLexerLanguage("lpeg")
   editor:SetProperty("lexer.lpeg.home", lpath)
   editor:SetProperty("fold", edcfg.fold and "1" or "0")
-  editor:PrivateLexerCall(4006, lexer) --[[ SetLexerLanguage ]]
+  editor:PrivateLexerCall(wxstc.wxSTC_SETLEXERLANGUAGE, lexer) --[[ SetLexerLanguage for LexLPeg ]]
+  if ok then wx.wxSetEnv("LUA_CPATH", cpath) end
+
   if dynlexer then cleanup({dynfile, MergeFullPath(tmppath, "lexer.lua"), tmppath}) end
 
   local styleconvert = {}
@@ -1737,7 +1727,7 @@ end
 
 function SetupKeywords(editor, ext, forcespec, styles, font, fontitalic)
   local lexerstyleconvert = nil
-  local spec = forcespec or GetSpec(ext)
+  local spec = forcespec or ide:FindSpec(ext)
   -- found a spec setup lexers and keywords
   if spec then
     if type(spec.lexer) == "string" then

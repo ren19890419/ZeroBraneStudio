@@ -1,4 +1,4 @@
--- Copyright 2011-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
 -- authors: Lomtik Software (J. Winwood & John Labenski)
 -- Luxinia Dev (Eike Decker & Christoph Kubisch)
 -- David Manura
@@ -153,23 +153,27 @@ function FileSysGetRecursive(path, recursive, spec, opts)
   local optskipbinary = (opts or {}).skipbinary
   local optondirectory = (opts or {}).ondirectory
 
-  local function spec2list(spec, list)
+  local function spec2list(spect, list)
     -- return empty list if no spec is provided
-    if spec == nil or spec == "*" or spec == "*.*" then return {}, 0 end
+    if spect == nil or spect == "*" or spect == "*.*" then return {}, 0 end
     -- accept "*.lua" and "*.txt,*.wlua" combinations
-    if type(spec) == 'table' then spec = table.concat(spec, ",") end
     local masknum, list = 0, list or {}
-    for m in spec:gmatch("[^%s;,]+") do
-      m = m:gsub("[\\/]", sep)
-      if m:find("^%*%.%w+"..sep.."?$") then
-        list[m:sub(2)] = true
-      else
-        -- escape all special characters
-        -- and replace (escaped) ** with .* and (escaped) * with [^\//]*
-        table.insert(list, EscapeMagic(m)
-          :gsub("%%%*%%%*", ".*"):gsub("%%%*", "[^/\\]*").."$")
+    for spec, specopt in pairs(type(spect) == 'table' and spect or {spect}) do
+      -- specs can be kept as `{[spec] = true}` or `{spec}`, so handle both cases
+      if type(spec) == "number" then spec = specopt end
+      if specopt == false then spec = "" end -- skip keys with `false` values
+      for m in spec:gmatch("[^%s;,]+") do
+        m = m:gsub("[\\/]", sep)
+        if m:find("^%*%.%w+"..sep.."?$") then
+          list[m:sub(2)] = true
+        else
+          -- escape all special characters
+          -- and replace (escaped) ** with .* and (escaped) * with [^\//]*
+          table.insert(list, EscapeMagic(m)
+            :gsub("%%%*%%%*", ".*"):gsub("%%%*", "[^/\\]*").."$")
+        end
+        masknum = masknum + 1
       end
-      masknum = masknum + 1
     end
     return list, masknum
   end
@@ -279,6 +283,36 @@ function MergeFullPath(p, f)
   return (file:Normalize(normalflags, p)
     and (rel or ""):gsub("[/\\]", GetPathSeparator())..file:GetFullPath()
     or nil)
+end
+
+function FileNormalizePath(path)
+  local filePath = wx.wxFileName(path)
+  filePath:Normalize()
+  filePath:SetVolume(filePath:GetVolume():upper())
+  return filePath:GetFullPath()
+end
+
+function FileGetLongPath(path)
+  local fn = wx.wxFileName(path)
+  local vol = fn:GetVolume():upper()
+  local volsep = vol and vol:byte() and wx.wxFileName.GetVolumeSeparator(vol:byte()-("A"):byte()+1)
+  local dir = wx.wxDir()
+  local dirs = fn:GetDirs()
+  table.insert(dirs, fn:GetFullName())
+  local normalized = vol and volsep and vol..volsep or (path:match("^[/\\]") or ".")
+  local hasclose = ide:IsValidProperty(dir, "Close")
+  while #dirs > 0 do
+    dir:Open(normalized)
+    if not dir:IsOpened() then return path end
+    local p = table.remove(dirs, 1)
+    local ok, segment = dir:GetFirst(p)
+    if not ok then return path end
+    normalized = MergeFullPath(normalized,segment)
+    if hasclose then dir:Close() end
+  end
+  local file = wx.wxFileName(normalized)
+  file:Normalize(wx.wxPATH_NORM_DOTS) -- remove leading dots, if any
+  return file:GetFullPath()
 end
 
 function CreateFullPath(path)
@@ -436,7 +470,7 @@ function RequestAttention()
 end
 
 function TR(msg, count)
-  local messages = ide.config.messages
+  local messages = ide.messages
   local lang = ide.config.language
   local counter = messages[lang] and messages[lang][0]
   local message = messages[lang] and messages[lang][msg]

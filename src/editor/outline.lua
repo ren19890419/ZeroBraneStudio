@@ -1,4 +1,4 @@
--- Copyright 2014-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2014-17 Paul Kulchenko, ZeroBrane LLC
 
 local ide = ide
 ide.outline = {
@@ -128,7 +128,7 @@ local function outlineRefresh(editor, force)
   -- add file
   local filename = ide:GetDocument(editor):GetTabText()
   local fileitem = cache.fileitem
-  if not fileitem then
+  if not fileitem or not fileitem:IsOk() then
     local root = ctrl:GetRootItem()
     if not root or not root:IsOk() then return end
 
@@ -293,7 +293,7 @@ local function createOutlineWindow()
         if not parent:IsOk() then return end
       end
       -- activate editor tab
-      local editor = onefile and GetEditor() or ctrl:GetItemData(parent):GetData()
+      local editor = onefile and ide:GetEditor() or ctrl:GetItemData(parent):GetData()
       local cache = caches[editor]
       if editor and cache then
         -- move to position in the file
@@ -370,7 +370,9 @@ end
 local function eachNode(eachFunc, root, recursive)
   local ctrl = outline.outlineCtrl
   if not ctrl then return end
-  local item = ctrl:GetFirstChild(root or ctrl:GetRootItem())
+  root = root or ctrl:GetRootItem()
+  if not (root and root:IsOk()) then return end
+  local item = ctrl:GetFirstChild(root)
   while true do
     if not item:IsOk() then break end
     if eachFunc and eachFunc(ctrl, item) then break end
@@ -443,9 +445,15 @@ local package = ide:AddPackage('core.outline', {
       local cache = caches[editor]
       local fileitem = cache and cache.fileitem
       caches[editor] = nil -- remove from cache
-      -- if one file is shown, then only clear outline if the current editor is being closed
-      if (ide.config.outline or {}).showonefile and editor ~= ide:GetEditor() then return end
-      if fileitem then outline.outlineCtrl:Delete(fileitem) end
+
+      if fileitem and fileitem:IsOk() then
+        local ctrl = outline.outlineCtrl
+        if (ide.config.outline or {}).showonefile then
+          ctrl:DeleteChildren(fileitem)
+        else
+          ctrl:Delete(fileitem)
+        end
+      end
     end,
 
     -- handle rename of the file in the current editor
@@ -605,6 +613,7 @@ local package = ide:AddPackage('core.outline', {
       -- scan all items recursively starting from the current file
       eachNode(function(ctrl, item)
           local func = cache.funcs[ctrl:GetItemData(item):GetData()]
+          if not func then return end
           local val = edpos >= func.pos and func.poe and edpos <= func.poe
           if edline == editor:LineFromPosition(func.pos)+1
           or (func.poe and edline == editor:LineFromPosition(func.poe)+1) then
@@ -667,7 +676,7 @@ function outline:RefreshSymbols(path, callback)
 
   local exts = {}
   for _, ext in pairs(ide:GetKnownExtensions()) do
-    local spec = GetSpec(ext)
+    local spec = ide:FindSpec(ext)
     if spec and spec.marksymbols then table.insert(exts, ext) end
   end
 

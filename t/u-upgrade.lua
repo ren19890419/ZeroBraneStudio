@@ -1,5 +1,6 @@
-local ver311 = ide.wxver >= "3.1.1"
-ok(ver311 and wx.wxFileName().ShouldFollowLink or nil, "wxlua/wxwidgets includes wxFileName().ShouldFollowLink.")
+if ide.wxver >= "3.1" then
+  ok(wx.wxFileName().ShouldFollowLink ~= nil, "wxlua/wxwidgets includes wxFileName().ShouldFollowLink.")
+end
 
 local function waitToComplete(bid)
   while wx.wxProcess.Exists(bid) do
@@ -39,3 +40,7 @@ for env, val in pairs(envs) do
 end
 
 is(jit.version, "LuaJIT 2.0.4", "Using LuaJIT with the expected version.")
+
+require "lpeg"
+local lexpath = package.searchpath("lexlpeg", ide.osclibs)
+ok(package.loadlib(lexpath, "GetLexerCount") ~= nil, "LexLPeg lexer is loaded.")

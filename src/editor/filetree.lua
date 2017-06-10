@@ -1,4 +1,4 @@
--- Copyright 2011-16 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
 -- authors: Luxinia Dev (Eike Decker & Christoph Kubisch)
 ---------------------------------------------------------
 
@@ -10,24 +10,57 @@ ide.filetree = {
   projdirpartmap = {},
   projtreeCtrl = nil,
   imglist = ide:CreateImageList("PROJECT",
-    "FOLDER", "FILE-KNOWN", "FILE-NORMAL", "FILE-NORMAL-START",
-    "FOLDER-MAPPED"),
+    "FOLDER", "FOLDER-MAPPED", "FILE-NORMAL", "FILE-NORMAL-START",
+    "FILE-KNOWN"),
   settings = {extensionignore = {}, startfile = {}, mapped = {}},
+  extmap = {},
 }
 local filetree = ide.filetree
 local iscaseinsensitive = wx.wxFileName("A"):SameAs(wx.wxFileName("a"))
 local pathsep = GetPathSeparator()
 local q = EscapeMagic
-local image = {
-  DIRECTORY = 0, FILEKNOWN = 1, FILEOTHER = 2, FILEOTHERSTART = 3,
-  DIRECTORYMAPPED = 4,
+local image = { -- the order of ids has to match the order in the ImageList
+  DIRECTORY = 0, DIRECTORYMAPPED = 1, FILEOTHER = 2, FILEOTHERSTART = 3,
+  FILEKNOWN = 4,
 }
+
+local clearbmp = ide:GetBitmap("FILE-NORMAL-CLR", "PROJECT", wx.wxSize(16,16))
+local function str2rgb(str)
+  local a = ('a'):byte()
+  -- `red`/`blue` are more prominent colors; use them for the first two letters; suppress `green`
+  local r = (((str:sub(1,1):lower():byte() or a)-a) % 27)/27
+  local b = (((str:sub(2,2):lower():byte() or a)-a) % 27)/27
+  local g = (((str:sub(3,3):lower():byte() or a)-a) % 27)/27/3
+  local ratio = 256/(r + g + b + 1e-6)
+  return {math.floor(r*ratio), math.floor(g*ratio), math.floor(b*ratio)}
+end
+local function createImg(ext)
+  local iconmap = ide.config.filetree.iconmap
+  local color = type(iconmap)=="table" and type(iconmap[ext])=="table" and iconmap[ext].fg
+  local bitmap = wx.wxBitmap(16, 16)
+  local font = wx.wxFont(ide.font.eNormal)
+  font:SetPointSize(ide.osname == "Macintosh" and 6 or 5)
+  local mdc = wx.wxMemoryDC()
+  mdc:SelectObject(bitmap)
+  mdc:SetFont(font)
+  mdc:DrawBitmap(clearbmp, 0, 0, true)
+  mdc:SetTextForeground(wx.wxColour(unpack(type(color)=="table" and color or str2rgb(ext))))
+  mdc:DrawText(ext:sub(1,3), 2, 5) -- take first three letters only
+  mdc:SelectObject(wx.wxNullBitmap)
+  return bitmap
+end
 
 local function getIcon(name, isdir)
   local startfile = GetFullPathIfExists(FileTreeGetDir(),
     filetree.settings.startfile[FileTreeGetDir()])
-  local known = GetSpec(GetFileExt(name))
-  local icon = isdir and image.DIRECTORY or known and image.FILEKNOWN or image.FILEOTHER
+  local ext = GetFileExt(name)
+  local extmap = ide.filetree.extmap
+  local known = extmap[ext] or ide:FindSpec(ext)
+  if known and not extmap[ext] then
+    local iconmap = ide.config.filetree.iconmap
+    extmap[ext] = iconmap and ide.filetree.imglist:Add(createImg(ext)) or image.FILEKNOWN
+  end
+  local icon = isdir and image.DIRECTORY or known and extmap[ext] or image.FILEOTHER
   if startfile and startfile == name then icon = image.FILEOTHERSTART end
   return icon
 end
@@ -161,7 +194,8 @@ local function treeSetConnectorsAndIcons(tree)
 
   function tree:IsDirectory(item_id) return isIt(item_id, image.DIRECTORY) end
   function tree:IsDirMapped(item_id) return isIt(item_id, image.DIRECTORYMAPPED) end
-  function tree:IsFileKnown(item_id) return isIt(item_id, image.FILEKNOWN) end
+  -- "file known" is a special case as it includes file types registered dynamically
+  function tree:IsFileKnown(item_id) return tree:GetItemImage(item_id) >= image.FILEKNOWN end
   function tree:IsFileOther(item_id) return isIt(item_id, image.FILEOTHER) end
   function tree:IsFileStart(item_id) return isIt(item_id, image.FILEOTHERSTART) end
   function tree:IsRoot(item_id) return not tree:GetItemParent(item_id):IsOk() end

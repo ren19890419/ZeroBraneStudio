@@ -1,4 +1,4 @@
--- Copyright 2013-15 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2013-17 Paul Kulchenko, ZeroBrane LLC
 ---------------------------------------------------------
 
 local ide = ide
@@ -127,6 +127,13 @@ function ide:Exit(hotexit)
 end
 function ide:GetApp() return self.editorApp end
 function ide:GetAppName() return self.appname end
+function ide:GetDefaultFileName()
+  local default = self.config.default
+  local ext = default.extension
+  local ed = self:GetEditor()
+  if ed and default.usecurrentextension then ext = self:GetDocument(ed):GetFileExt() end
+  return default.name..(ext and ext > "" and "."..ext or "")
+end
 function ide:GetEditor(index) return GetEditor(index) end
 function ide:GetEditorWithFocus(...) return GetEditorWithFocus(...) end
 function ide:GetEditorWithLastFocus()
@@ -798,6 +805,28 @@ function ide:AddSpec(name, spec)
 end
 function ide:RemoveSpec(name) self.specs[name] = nil end
 
+function ide:FindSpec(ext)
+  if not ext then return end
+  for _,curspec in pairs(self.specs) do
+    for _,curext in ipairs(curspec.exts or {}) do
+      if curext == ext then return curspec end
+    end
+  end
+  -- check for extension to spec mapping and create the spec on the fly if present
+  local edcfg = self.config.editor
+  if type(edcfg.specmap) == "table" and edcfg.specmap[ext] then
+    local name = edcfg.specmap[ext]
+    -- check if there is already spec with this name, but doesn't have this extension registered
+    if self.specs[name] then
+      table.insert(self.specs[name].exts or {}, ext)
+      return self.specs[name]
+    end
+    local spec = { exts = {ext}, lexer = "lexlpeg."..name }
+    self:AddSpec(name, spec)
+    return spec
+  end
+end
+
 function ide:AddAPI(type, name, api)
   self.apis[type] = self.apis[type] or {}
   self.apis[type][name] = api
@@ -976,7 +1005,8 @@ function ide:IsValidCtrl(ctrl)
 end
 
 function ide:IsValidProperty(ctrl, prop)
-  return ide:IsValidCtrl(ctrl) and pcall(function() return ctrl[prop] end) and ctrl[prop]
+  -- some control may return `nil` values for non-existing properties, so check for that
+  return pcall(function() return ctrl[prop] end) and ctrl[prop] ~= nil
 end
 
 function ide:IsValidHotKey(ksc)

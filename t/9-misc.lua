@@ -39,20 +39,22 @@ copyToClipboard(valid)
 editor:PasteDyn()
 is(editor:GetTextDyn(), valid, "Valid UTF-8 string is pasted from the clipboard.")
 
--- copying invalid UTF8
-local invalid = "-- \193"
-copyToClipboard(invalid, wx.wxDF_TEXT)
-editor:SetTextDyn(invalid)
-ok(#editor:GetTextDyn() == #invalid, "Length of stored string is the same as the invalid UTF-8 string.")
+if ide.wxver >= "3.1" then
+  -- copying invalid UTF8
+  local invalid = "-- \193"
+  copyToClipboard(invalid, wx.wxDF_TEXT)
+  editor:SetTextDyn(invalid)
+  ok(#editor:GetTextDyn() == #invalid, "Length of stored string is the same as the invalid UTF-8 string.")
 
-local valid = "ásg"
-ok(#editor:GetTextDyn() == #valid, "Length of copied content is the same as the valid UTF-8 string.")
-editor:SetSelectionStart(0)
-editor:SetSelectionEnd(#invalid)
-editor:CopyDyn() -- populate the buffer with the "invalid" copy
-editor:SetSelectionEnd(0)
-editor:PasteDyn()
-is(editor:GetTextDyn(), invalid..invalid, "Invalid UTF-8 string is copied and pasted.")
+  local valid = "ásg"
+  ok(#editor:GetTextDyn() == #valid, "Length of copied content is the same as the valid UTF-8 string.")
+  editor:SetSelectionStart(0)
+  editor:SetSelectionEnd(#invalid)
+  editor:CopyDyn() -- populate the buffer with the "invalid" copy
+  editor:SetSelectionEnd(0)
+  editor:PasteDyn()
+  is(editor:GetTextDyn(), invalid..invalid, "Invalid UTF-8 string is copied and pasted.")
+end
 
 -- copying valid when the buffer is for invalid of the same length
 copyToClipboard(valid)
@@ -94,3 +96,21 @@ ok(ide:FindMenuItem(ID.ABOUT):GetText():match("\t(.*)") == nil, "`SetHotKey` rem
 
 ide:SetHotKey(ID.STARTDEBUG, "Ctrl+N") -- this should resolve conflict with `Ctrl-N`
 ok(ide:FindMenuItem(ID.NEW):GetText():match("\t(.*)") == nil, "`SetHotKey` removes conflicted hotkey (2/2).")
+
+local capname, cwd = [[T\TesT.LUA]], wx.wxGetCwd()
+if ide.osname == "Windows" then
+  -- relative path
+  is(FileGetLongPath(capname), capname:lower(), "`GetLongFilePath` returns properly formatted path on Windows (1/3).")
+  -- absolute path with volume
+  is(FileGetLongPath(MergeFullPath(cwd,capname)), MergeFullPath(cwd,capname:lower()), "`GetLongFilePath` returns properly formatted path on Windows (2/3).")
+  -- absolute path with no volume
+  is(FileGetLongPath(MergeFullPath(cwd,capname):gsub("^.:","")), MergeFullPath(cwd,capname:lower()):gsub("^.:",""), "`GetLongFilePath` returns properly formatted path on Windows (3/3).")
+end
+
+ide:SetProject("t")
+is(ide:GetProject("t"):gsub("[/\\]$",""), MergeFullPath(cwd,"t"), "Project is set to the expected path.")
+local tree = ide:GetProjectTree()
+local itemid = tree:FindItem("test.lua")
+ok(itemid and itemid:IsOk() and tree:IsFileKnown(itemid), ".lua files have 'known' type.")
+
+is(ide:IsValidProperty({}, "nonexisting"), false, "`IsValidProperty` returns `false ` for non-existing properties.")
