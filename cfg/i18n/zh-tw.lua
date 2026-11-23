@@ -1,4 +1,5 @@
 return {
+  ["The debug client does not support evaluating the selected stack frame."] = "目前的除錯用戶端不支援對所選堆疊框架求值。",
   ["Problems"] = "問題清單",
   ["Severity"] = "嚴重程度",
   ["File"] = "檔案",

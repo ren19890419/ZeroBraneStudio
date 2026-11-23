@@ -108,7 +108,7 @@ local socket = require "socket"
 local coro_debugger
 local coro_debugee
 local coroutines = {}; setmetatable(coroutines, {__mode = "k"}) -- "weak" keys
-local events = { BREAK = 1, WATCH = 2, RESTART = 3, STACK = 4, SETLOCAL = 5 }
+local events = { BREAK = 1, WATCH = 2, RESTART = 3, STACK = 4, SETLOCAL = 5, EXECFRAME = 6 }
 local breakpoints = {}
 local watches = {}
 local lastsource
@@ -440,17 +440,21 @@ local function restore_vars(vars)
   end
 end
 
-local function capture_vars(level, thread)
+local function capture_vars(level, thread, scoped)
   level = (level or 0)+2 -- add two levels for this and debug calls
   local func = (thread and debug.getinfo(thread, level, "f") or debug.getinfo(level, "f") or {}).func
   if not func then return {} end
 
   local vars = {['...'] = {}}
+  local names = scoped and {}
   local i = 1
   while debug.getupvalue do
     local name, value = debug.getupvalue(func, i)
     if not name then break end
-    if string.sub(name, 1, 1) ~= '(' then vars[name] = value end
+    if string.sub(name, 1, 1) ~= '(' then
+      vars[name] = value
+      if names then names[name] = true end
+    end
     i = i + 1
   end
   i = 1
@@ -462,7 +466,10 @@ local function capture_vars(level, thread)
       name, value = debug.getlocal(level, i)
     end
     if not name then break end
-    if string.sub(name, 1, 1) ~= '(' then vars[name] = value end
+    if string.sub(name, 1, 1) ~= '(' then
+      vars[name] = value
+      if names then names[name] = true end
+    end
     i = i + 1
   end
   -- get varargs (these use negative indices)
@@ -485,8 +492,32 @@ local function capture_vars(level, thread)
   -- including access to globals, but this causes vars[name] to fail in
   -- restore_vars on local variables or upvalues with `nil` values when
   -- 'strict' is in effect. To avoid this `rawget` is used in restore_vars.
-  setmetatable(vars, { __index = getfenv(func), __newindex = getfenv(func), __mode = "v" })
+  local globals = getfenv(func)
+  local index = names and function(_, name)
+    if not names[name] then return globals[name] end
+  end or globals
+  setmetatable(vars, { __index = index, __newindex = globals, __mode = not scoped and "v" or nil })
+  if scoped then return vars, i - 1 end
   return vars
+end
+
+local unavailable_frame = "The selected stack frame is unavailable."
+
+local function execute_in_frame(request)
+  -- The frame numbering matches stack(3) in the debug hook.
+  if not debug.getinfo(request.frame + 2, "f") then return false, unavailable_frame end
+  local env, nargs = capture_vars(request.frame + 1, nil, true)
+  setfenv(request.func, env)
+  return pcall(request.func, unpack(rawget(env, "..."), 1, nargs))
+end
+
+local function pack(...)
+  return {n = select("#", ...), ...}
+end
+
+local function refresh_vars(vars, current)
+  for name in pairs(vars) do rawset(vars, name, nil) end
+  for name, value in pairs(current) do rawset(vars, name, value) end
 end
 
 local function set_local(request)
@@ -776,19 +807,19 @@ local function debug_hook(event, line)
     end
 
     -- Read and edit variables in the paused program's coroutine.
-    while status and (res == 'stack' or res == 'setlocal') do
+    while status and (res == 'stack' or res == 'setlocal' or res == 'execframe') do
       if vars then restore_vars(vars) end -- restore vars so they are reflected in stack values
       if res == 'stack' then
         status, res, request = cororesume(coro_debugger, events.STACK, stack(3), file, line)
+      elseif res == 'execframe' then
+        local result = pack(execute_in_frame(request))
+        if vars then refresh_vars(vars, capture_vars(1)) end
+        status, res, request = cororesume(coro_debugger, events.EXECFRAME, unpack(result, 1, result.n))
       else
         local ok, err = set_local(request)
         -- A caller's edited local can also be an upvalue of the paused frame.
         -- Refresh the evaluation environment in place so it cannot restore the old value.
-        if vars then
-          local current = capture_vars(1)
-          for name in pairs(vars) do rawset(vars, name, nil) end
-          for name, value in pairs(current) do rawset(vars, name, value) end
-        end
+        if vars then refresh_vars(vars, capture_vars(1)) end
         status, res, request = cororesume(coro_debugger, events.SETLOCAL, ok, err)
       end
     end
@@ -829,6 +860,11 @@ local function stringify_results(params, status, ...)
   -- this is done to allow each returned value to be used (serialized or not)
   -- intependently and to preserve "original" comments
   return pcall(mobdebug.dump, t, {sparse = false})
+end
+
+local function stringify_frame_results(params, event, ...)
+  if event ~= events.EXECFRAME then return false, unavailable_frame end
+  return stringify_results(params, ...)
 end
 
 local function isrunning()
@@ -900,7 +936,7 @@ local function debugger_loop(sev, svars, sfile, sline)
       else
         server:send("400 Bad Request\n")
       end
-    elseif command == "EXEC" then
+    elseif command == "EXEC" or command == "EXECFRAME" then
       -- extract any optional parameters
       local params = string.match(line, "--%s*(%b{})%s*$")
       local _, _, chunk = string.find(line, "^[A-Z]+%s+(.+)$")
@@ -914,11 +950,18 @@ local function debugger_loop(sev, svars, sfile, sline)
           params = pfunc and pfunc()
           params = (type(params) == "table" and params or {})
           local stack = tonumber(params.stack)
-          -- if the requested stack frame is not the current one, then use a new capture
-          -- with a specific stack frame: `capture_vars(0, coro_debugee)`
-          local env = stack and coro_debugee and capture_vars(stack-1, coro_debugee) or eval_env
-          setfenv(func, env)
-          status, res = stringify_results(params, pcall(func, unpack(rawget(env,'...') or {})))
+          if command == "EXECFRAME" then
+            if seen_hook and stack and stack >= 1 and stack <= 100 and stack % 1 == 0 then
+              status, res = stringify_frame_results(params, coroyield("execframe", {frame = stack, func = func}))
+            else
+              status, res = false, unavailable_frame
+            end
+          else
+            -- Keep the legacy EXEC stack option for existing controllers.
+            local env = stack and coro_debugee and capture_vars(stack-1, coro_debugee) or eval_env
+            setfenv(func, env)
+            status, res = stringify_results(params, pcall(func, unpack(rawget(env,'...') or {})))
+          end
         end
         if status then
           if mobdebug.onscratch then mobdebug.onscratch(res) end
@@ -926,7 +969,7 @@ local function debugger_loop(sev, svars, sfile, sline)
           server:send(res)
         else
           -- fix error if not set (for example, when loadstring is not present)
-          if not res then res = "Unknown error" end
+          res = res == nil and "Unknown error" or tostring(res)
           server:send("401 Error in Expression " .. tostring(#res) .. "\n")
           server:send(res)
         end
@@ -1468,17 +1511,18 @@ local function handle(params, client, options)
         print("Error: watch expression at index " .. index .. " [" .. exp .. "] not removed")
       end
     end
-  elseif command == "eval" or command == "exec" or command == "setlocal"
+  elseif command == "eval" or command == "exec" or command == "evalframe" or command == "execframe" or command == "setlocal"
       or command == "load" or command == "loadstring"
       or command == "reload" then
     local _, _, exp = string.find(params, "^[a-z]+%s+(.+)$")
     if exp or (command == "reload") then
       if command == "setlocal" then
         client:send("SETLOCAL " .. exp .. "\n")
-      elseif command == "eval" or command == "exec" then
+      elseif command == "eval" or command == "exec" or command == "evalframe" or command == "execframe" then
         exp = exp:gsub("\r?\n", "\r"..SAFEWS) -- convert new lines, so the fragment can be passed as one line
-        if command == "eval" then exp = "return " .. exp end
-        client:send("EXEC " .. exp .. "\n")
+        if command == "eval" or command == "evalframe" then exp = "return " .. exp end
+        local wire = command == "evalframe" or command == "execframe"
+        client:send((wire and "EXECFRAME " or "EXEC ") .. exp .. "\n")
       elseif command == "reload" then
         client:send("LOAD 0 -\n")
       elseif command == "loadstring" then
@@ -1557,6 +1601,8 @@ local function handle(params, client, options)
           return nil, nil, res
         elseif command == "setlocal" and params == "400 Bad Request" then
           return nil, nil, "The debug client does not support editing local variables."
+        elseif (command == "evalframe" or command == "execframe") and params == "400 Bad Request" then
+          return nil, nil, "The debug client does not support evaluating the selected stack frame."
         else
           print("Unknown error")
           return nil, nil, "Debugger error: unexpected response after EXEC/LOAD '" .. params .. "'"

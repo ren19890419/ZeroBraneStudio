@@ -14,10 +14,10 @@ FileWrite(debugfile, table.concat({
   "",
   "local a, data, stable = 1+2, {handle = io.stdout, item = {" .. table.concat(fields, ", ") .. "}}, 42",
   "a = 2+3; data.item.count = 11; data.item.added = true; data.item.field20 = 99",
-  "local function add()",
-  "  a = a + 1",
+  "local function add(a)",
+  "  return a + 1",
   "end; data.item.field20 = nil",
-  "add()",
+  "a = a + add(90) - 90",
   "a = 5+6",
   "a = a + 1",
   "a = a + 1",
@@ -68,6 +68,10 @@ local function scrollLocals(locals, axis, position)
   event:SetEventObject(locals)
   locals:GetEventHandler():ProcessEvent(event)
 end
+local oldClient = {send = function() end, receive = function() return "400 Bad Request" end}
+local _, _, frameError = require("mobdebug").handle("evalframe a -- {stack = 2}", oldClient, {verbose = false})
+is(frameError, "The debug client does not support evaluating the selected stack frame.",
+  "An older client reports unsupported caller-frame evaluation.")
 dispatch(ID.STEP)
 local firstpid = ide:GetLaunchedProcess()
 ok(firstpid ~= nil, "Step Into launches a debug process.")
@@ -81,7 +85,8 @@ local commands = {
   {debugfile, 4, "Step"},
   {debugfile, 5, "Over"},
   {debugfile, 8, "RunTo", {9}},
-  {debugfile, 9, "Over"},
+  {debugfile, 9, "Step"},
+  {debugfile, 7, "WatchFrames"},
   {debugfile, breakpointLine, "Restart"},
   {debugfile, breakpointLine, "StartRunTo"},
   {debugfile, 5, "StartF5"},
@@ -239,7 +244,34 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     ok(item ~= nil and not findLocalRow(locals, "field20") and locals:GetGridCursorRow() == item,
       "Removing the selected field selects its remaining parent.")
     if item then locals:ToggleLocal(item) end
-  elseif command == 5 and ID.DEBUGLOCALS then
+  elseif cmd == "WatchFrames" then
+    dispatch(ID.DEBUGWATCHWINDOW)
+    debugger:Wait()
+    local watch = ide:GetWatch()
+    local value = ide:AddWatch("a")
+    local expression = ide:AddWatch("a * 2")
+    debugger:Wait()
+    is(watch:GetItemText(value), "a = 90", "Watch evaluates in the innermost frame initially.")
+    dispatch(ID.DEBUGCALLSTACK)
+    debugger:Wait()
+    local stack = ide:GetStack()
+    local inner = stack:GetFirstChild(stack:GetRootItem())
+    local caller = stack:GetNextSibling(inner)
+    ok(caller:IsOk(), "The call stack contains the caller of the paused function.")
+    if caller:IsOk() then
+      local function selectFrame(item)
+        stack:SelectItem(item)
+        ide:ActivateNotebookPage(watch)
+        watch:SetFocus()
+        debugger:Wait()
+      end
+      selectFrame(caller)
+      is(watch:GetItemText(value), "a = 5", "Selecting the caller automatically refreshes its shadowed local in Watch.")
+      is(watch:GetItemText(expression), "a * 2 = 10", "Watch reevaluates full expressions in the selected caller.")
+      selectFrame(inner)
+      is(watch:GetItemText(value), "a = 90", "Returning to the innermost frame refreshes Watch again.")
+    end
+  elseif cmd == "Restart" and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()
     local locals = ide:GetLocals()
@@ -271,7 +303,7 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       is(watch:GetChildrenCount(watch:GetRootItem(), false), before, "Adding an existing watch does not duplicate it.")
       ok(ide:IsWindowShown(watch), "The Watch window is displayed after adding an expression.")
     end
-  elseif command == 6 and ID.DEBUGLOCALS then
+  elseif cmd == "StartRunTo" and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()
     local locals = ide:GetLocals()
@@ -310,6 +342,8 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       dispatch(ID.STEPOVER)
     elseif cmd == "RunTo" then
       runToCursor(unpack(args))
+    elseif cmd == "WatchFrames" then
+      debugger:Run()
     elseif cmd == "Continue" then
       dispatch(ID.STARTDEBUG)
     elseif cmd == "StartRunTo" or cmd == "StartF5" then

@@ -1,4 +1,5 @@
 return {
+  ["The debug client does not support evaluating the selected stack frame."] = "当前调试客户端不支持在所选调用帧中求值。",
   ["Problems"] = "问题列表",
   ["Severity"] = "严重级别",
   ["File"] = "文件",

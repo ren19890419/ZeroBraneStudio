@@ -59,6 +59,14 @@ function debugger:init(init)
   return setmetatable(o, {__index = protodeb})
 end
 
+local function isWatchContext(debugger, connection, frame)
+  return debugger == ide:GetDebugger() and debugger.server == connection and (debugger.localsFrame or 1) == frame
+end
+
+local function watchError(message)
+  return TR((message:gsub("%[.-%]:%d+:%s+", "")))
+end
+
 function debugger:updateWatchesSync(onlyitem)
   local debugger = self
   local watchCtrl = debugger.watchCtrl
@@ -66,6 +74,7 @@ function debugger:updateWatchesSync(onlyitem)
   local shown = watchCtrl and (pane:IsOk() and pane:IsShown() or not pane:IsOk() and watchCtrl:IsShown())
   local canupdate = (debugger.server and not debugger.running and not debugger.scratchpad
     and not (debugger.options or {}).noeval)
+  if canupdate and not onlyitem then debugger.watchFramePending = nil end
   if shown and canupdate then
     local bgcl = watchCtrl:GetBackgroundColour()
     local hicl = wx.wxColour(math.floor(bgcl:Red()*.9),
@@ -74,6 +83,8 @@ function debugger:updateWatchesSync(onlyitem)
     local root = watchCtrl:GetRootItem()
     if not root or not root:IsOk() then return end
 
+    local context, connection = debugger.localsFrame or 1, debugger.server
+    local frameChanged = watchCtrl.evaluatedFrame ~= context
     local params = debugger:GetDataOptions({maxlength=false})
     local item = onlyitem or watchCtrl:GetFirstChild(root)
     while true do
@@ -81,10 +92,15 @@ function debugger:updateWatchesSync(onlyitem)
 
       local expression = watchCtrl:GetItemExpression(item)
       if expression then
-        local _, values, error = debugger:evaluate(expression, params)
+        local _, values, error = debugger:watchCommand("eval", context, expression, params)
+        if not isWatchContext(debugger, connection, context) then return end
+        if watchCtrl:GetItemExpression(item) ~= expression then
+          debugger.watchFramePending = true
+          return
+        end
         local curchildren = watchCtrl:GetItemChildren(item)
         if error then
-          error = error:gsub("%[.-%]:%d+:%s+","")
+          error = watchError(error)
           watchCtrl:SetItemValueIfExpandable(item, nil)
         else
           if #values == 0 then values = {'nil'} end
@@ -99,7 +115,7 @@ function debugger:updateWatchesSync(onlyitem)
         watchCtrl:SetItemBackgroundColour(item, val ~= newval and hicl or bgcl)
         watchCtrl:SetItemText(item, newval)
 
-        if onlyitem or val ~= newval then
+        if onlyitem or frameChanged or val ~= newval then
           local newchildren = watchCtrl:GetItemChildren(item)
           if next(curchildren) ~= nil and next(newchildren) == nil then
             watchCtrl:SetItemHasChildren(item, true)
@@ -115,6 +131,7 @@ function debugger:updateWatchesSync(onlyitem)
       if onlyitem then break end
       item = watchCtrl:GetNextSibling(item)
     end
+    if not onlyitem then watchCtrl.evaluatedFrame = context end
     debugger.needrefresh.watches = false
   elseif not shown and canupdate then
     debugger.needrefresh.watches = true
@@ -452,6 +469,7 @@ function debugger:renderLocals(message)
 end
 
 function debugger:resetLocals(rememberPause)
+  self.watchFramePending = nil
   self.previousLocalsStack = rememberPause and self.localsStack or nil
   if not rememberPause then self.localsView = nil end
   self.localsFrame = nil
@@ -1369,6 +1387,10 @@ do
       smth = copas.step(0)
       nextupdate = ide:GetTime() + nextupdatedelta
     end
+    if debugger.server and not debugger.running and debugger.watchFramePending then
+      debugger.watchFramePending = nil
+      debugger:updateWatches()
+    end
 
     -- if there is any pending activation
     if debugger.activate then
@@ -1467,6 +1489,14 @@ end
 local function todeb(params) return params and " -- "..mobdebug.line(params, {comment = false}) or "" end
 function debugger:evaluate(exp, params) return self:handle('eval ' .. exp .. todeb(params)) end
 function debugger:execute(exp, params) return self:handle('exec '.. exp .. todeb(params)) end
+function debugger:watchCommand(command, frame, exp, params)
+  if frame > 1 then
+    command = command .. "frame"
+    params = params or {}
+    params.stack = frame
+  end
+  return self:handle(command .. " " .. exp .. todeb(params))
+end
 function debugger:stack(params) return self:handle('stack' .. todeb(params)) end
 function debugger:Break(command)
   local debugger = self
@@ -1740,6 +1770,8 @@ local function debuggerCreateStackWindow()
     if debugger.localsStack and coords and (debugger.localsFrame or 1) ~= coords[3] then
       debugger.localsFrame = coords[3]
       debugger:renderLocals()
+      if debugger.running then debugger.watchFramePending = true
+      else debugger:updateWatches() end
     end
     event:Skip()
   end)
@@ -1821,7 +1853,7 @@ local function debuggerCreateWatchWindow()
     local isexpandable = type(value) == 'table' and (next(value) ~= nil or delayed and maxlvl ~= nil)
     if isexpandable then -- cache table value to expand when requested
       valuecache[item:GetValue()] = next(value) == nil and expandable or value
-    elseif type(value) ~= 'table' then
+    else
       valuecache[item:GetValue()] = nil
     end
     self:SetItemHasChildren(item, isexpandable)
@@ -1862,13 +1894,15 @@ local function debuggerCreateWatchWindow()
     local expr = self:GetItemFullExpression(item)
 
     local debugger = ide:GetDebugger()
+    local frame, connection = debugger.localsFrame or 1, debugger.server
     if debugger.running then debugger:Update() end
-    if debugger.server and not debugger.running
+    if connection and isWatchContext(debugger, connection, frame) and not debugger.running
     and (not debugger.scratchpad or debugger.scratchpad.paused) then
       copas.addthread(function()
         local debugger = debugger
-        local _, values, error = debugger:evaluate(expr)
-        ide:CopyToClipboard(error and error:gsub("%[.-%]:%d+:%s+","")
+        local _, values, error = debugger:watchCommand("eval", frame, expr)
+        if not isWatchContext(debugger, connection, frame) then return end
+        ide:CopyToClipboard(error and watchError(error)
           or (#values == 0 and 'nil' or fixUTF8(values[1])))
       end)
     end
@@ -1878,14 +1912,16 @@ local function debuggerCreateWatchWindow()
     local expr, itemupd = self:GetItemFullExpression(item)
 
     local debugger = ide:GetDebugger()
+    local frame, connection = debugger.localsFrame or 1, debugger.server
     if debugger.running then debugger:Update() end
-    if debugger.server and not debugger.running
+    if connection and isWatchContext(debugger, connection, frame) and not debugger.running
     and (not debugger.scratchpad or debugger.scratchpad.paused) then
       copas.addthread(function()
         local debugger = debugger
-        local _, _, err = debugger:execute(expr..'='..value)
+        local _, _, err = debugger:watchCommand("exec", frame, expr..'='..value)
+        if not isWatchContext(debugger, connection, frame) then return end
         if err then
-          watchCtrl:SetItemText(item, 'error: '..err:gsub("%[.-%]:%d+:%s+",""))
+          watchCtrl:SetItemText(item, 'error: '..watchError(err))
         elseif itemupd then
           debugger:updateWatchesSync(itemupd)
         end
@@ -1908,14 +1944,16 @@ local function debuggerCreateWatchWindow()
     local expr = self:GetItemFullExpression(item)
 
     local debugger = ide:GetDebugger()
+    local frame, connection = debugger.localsFrame or 1, debugger.server
     if debugger.running then debugger:Update() end
-    if debugger.server and not debugger.running
+    if connection and isWatchContext(debugger, connection, frame) and not debugger.running
     and (not debugger.scratchpad or debugger.scratchpad.paused) then
       copas.addthread(function()
         local debugger = debugger
-        local value, _, err = debugger:evaluate(expr, {maxlevel = 1})
+        local value, _, err = debugger:watchCommand("eval", frame, expr, {maxlevel = 1})
+        if not isWatchContext(debugger, connection, frame) then return end
         if err then
-          self:SetItemText(item, 'error: '..err:gsub("%[.-%]:%d+:%s+",""))
+          self:SetItemText(item, 'error: '..watchError(err))
         else
           local ok, res = LoadSafe("return "..tostring(value))
           if ok then
@@ -1991,8 +2029,8 @@ local function debuggerCreateWatchWindow()
   watchCtrl:Connect(wx.wxEVT_SET_FOCUS, function(event)
       local debugger = ide:GetDebugger()
       if debugger.needrefresh.watches then
-        debugger:updateWatches()
-        debugger.needrefresh.watches = false
+        if debugger.running then debugger.watchFramePending = true
+        else debugger:updateWatches() end
       end
     end)
 
@@ -2040,7 +2078,7 @@ local function debuggerCreateWatchWindow()
         and (not debugger.scratchpad or debugger.scratchpad.paused))
     end)
 
-  local label
+  local label, editDebugger, editConnection, editFrame
   watchCtrl:Connect(wx.wxEVT_COMMAND_TREE_BEGIN_LABEL_EDIT,
     function (event)
       local item = event:GetItem()
@@ -2050,6 +2088,8 @@ local function debuggerCreateWatchWindow()
       end
 
       label = watchCtrl:GetItemText(item)
+      editDebugger = ide:GetDebugger()
+      editConnection, editFrame = editDebugger.server, editDebugger.localsFrame or 1
 
       if watchCtrl:IsWatch(item) then
         local expr = watchCtrl:GetItemExpression(item)
@@ -2079,8 +2119,10 @@ local function debuggerCreateWatchWindow()
       else
         if watchCtrl:IsWatch(item) then
           watchCtrl:SetItemExpression(item, event:GetLabel())
-        else
+        elseif isWatchContext(editDebugger, editConnection, editFrame) then
           watchCtrl:UpdateItemValue(item, event:GetLabel())
+        else
+          watchCtrl:SetItemText(item, label)
         end
       end
       event:Skip()
