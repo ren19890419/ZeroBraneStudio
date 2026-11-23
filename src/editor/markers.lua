@@ -45,7 +45,8 @@ local function getMarkers(editor, mtype)
     local markerval = editor:MarkerGet(line)
     for markertype, val in pairs(markertypes) do
       if bit.band(markerval, val) > 0 and (not mtype or markertype == mtype) then
-        table.insert(edmarkers, {line, markertype})
+        local options = markertype == "breakpoint" and ide:GetDebugger():GetBreakpointOptions(editor, line) or nil
+        table.insert(edmarkers, {line, markertype, options})
       end
     end
     line = editor:MarkerNext(line + 1, maskall)
@@ -213,6 +214,7 @@ local function createMarkersWindow()
       local menu = ide:MakeMenu {
         { BOOKMARKTOGGLE, TR("Toggle Bookmark"), TR("Toggle bookmark") },
         { BREAKPOINTTOGGLE, TR("Toggle Breakpoint"), TR("Toggle breakpoint") },
+        { ID.BREAKPOINTOPTIONS, TR("Breakpoint Settings").."..." },
         { },
         { ID.BOOKMARKFILECLEAR, TR("Clear Bookmarks In File")..KSC(ID.BOOKMARKFILECLEAR) },
         { ID.BREAKPOINTFILECLEAR, TR("Clear Breakpoints In File")..KSC(ID.BREAKPOINTFILECLEAR) },
@@ -229,6 +231,18 @@ local function createMarkersWindow()
       menu:Enable(BREAKPOINTTOGGLE, itemimage == image.BREAKPOINT)
       menu:Connect(BREAKPOINTTOGGLE, wx.wxEVT_COMMAND_MENU_SELECTED,
         function() ctrl:ActivateItem(item_id, "breakpoint") end)
+
+      local debugger = ide:GetDebugger()
+      local editor, line
+      if itemimage == image.BREAKPOINT then
+        editor = item2editor(ctrl:GetItemParent(item_id))
+        line = tonumber(ctrl:GetItemText(item_id):match("^(%d+):"))
+      end
+      menu:Enable(ID.BREAKPOINTOPTIONS, line and debugger:CanEditBreakpoint(editor, line-1) or false)
+      menu:Connect(ID.BREAKPOINTOPTIONS, wx.wxEVT_COMMAND_MENU_SELECTED,
+        function()
+          if line then debugger:EditBreakpointOptions(editor, line-1) end
+        end)
 
       menu:Enable(ID.BOOKMARKFILECLEAR, itemimage == image.BOOKMARK or itemimage == image.FILE)
       menu:Connect(ID.BOOKMARKFILECLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
@@ -339,8 +353,8 @@ function markers:LoadMarkers(editor)
   local filepath = doc:GetFilePath()
   if filepath then
     for _, edmarker in ipairs(self.settings.markers[filepath] or {}) do
-      local line, markertype = unpack(edmarker)
-      editor:MarkerToggle(markertype, line, true)
+      local line, markertype, options = unpack(edmarker)
+      editor:MarkerToggle(markertype, line, true, options)
     end
   end
 end

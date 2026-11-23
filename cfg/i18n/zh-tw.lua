@@ -402,4 +402,13 @@ return {
   ["on line %d"] = "在第 %d 行", -- src\editor\debugger.lua, src\editor\editor.lua, src\editor\commands.lua
   ["traced %d instruction"] = "追蹤 %d 個指令", -- src\editor\debugger.lua
   ["unknown error"] = "未知的錯誤", -- src\editor\debugger.lua
+  ["Breakpoint Settings"] = "中斷點設定",
+  ["Condition"] = "條件",
+  ["Hit Count"] = "命中次數",
+  ["Log Message"] = "記錄訊息",
+  ["Hit count starts at 1 and counts visits that meet the condition."] = "從第 1 次命中開始計數，只統計符合條件的命中。",
+  ["A log message continues execution and can include {Lua expressions}."] = "填寫記錄訊息後，命中時輸出並繼續執行。訊息中可使用 {Lua 運算式}。",
+  ["Hit count must be a positive integer."] = "命中次數必須是正整數。",
+  ["Could not set the breakpoint at %s:%d."] = "無法設定 %s:%d 處的中斷點。",
+  ["The debug client does not support breakpoint options."] = "目前的偵錯用戶端不支援中斷點設定。",
 }

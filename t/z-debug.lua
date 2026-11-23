@@ -1,5 +1,20 @@
 local pkg = ...
 local unpack = table.unpack or unpack
+local mobdebug = require "mobdebug"
+local function breakpointRequest(answer)
+  local peer = {send = function(self, data) self.data = data end, receive = function() return answer end}
+  local _, _, err = mobdebug.handle("setx "..mobdebug.line({
+    file = "breakpoint options.lua", line = 3, condition = "index == 2", hitCount = 2,
+    log = "index={index}",
+  }, {comment = false}), peer, {verbose = false})
+  return peer.data, err
+end
+local request = breakpointRequest("200 OK")
+ok(request and request:match("^SETX ") and request:find("breakpoint options.lua", 1, true),
+  "Advanced breakpoint requests preserve the path and options.")
+local _, unsupported = breakpointRequest("400 Bad Request")
+ok(unsupported and unsupported:find("does not support", 1, true),
+  "Older debug clients report unsupported breakpoint settings.")
 -- save a test file and then load it
 local tempFile = wx.wxFile()
 local tempPath = wx.wxFileName.CreateTempFileName("zbs-debug", tempFile)
@@ -20,14 +35,26 @@ FileWrite(debugfile, table.concat({
   "a = a + add(90) - 90",
   "a = 5+6",
   "a = a + 1",
-  "a = a + 1",
+  "for i = 1, 5 do",
+  "  a = a + i",
+  "end",
 }, "\n"))
 pkg.onAppClose = function() FileRemove(debugfile) end
 ok(wx.wxFileExists(debugfile), "File created before starting debugging.")
 local editor = ide:ActivateFile(debugfile)
 local breakpointLine = 10
-local nextBreakpointLine = 12
+local nextBreakpointLine = 13
 editor:BreakpointToggle(breakpointLine - 1, true)
+local debugger = ide:GetDebugger()
+local logpointLine = 9
+editor:BreakpointToggle(logpointLine - 1, true)
+debugger:SetBreakpointOptions(editor, logpointLine - 1, {log = "Advanced breakpoint: a={a}"})
+editor:BreakpointToggle(3, true)
+debugger:SetBreakpointOptions(editor, 3, {log = "Entry breakpoint output"})
+ok(debugger:GetBreakpointOptions(editor, logpointLine - 1) ~= nil, "The logpoint is attached to its breakpoint marker.")
+editor:InsertText(0, "-- marker movement\n")
+ok(debugger:GetBreakpointOptions(editor, logpointLine) ~= nil, "The logpoint follows its marker after inserting a line.")
+editor:Undo()
 
 ide:GetMenuBar():Check(ID.CLEAROUTPUTENABLE, false)
 local runonstart = ide.config.debugger.runonstart
@@ -41,6 +68,9 @@ end
 ok(isEnabled(ID.STEP), "Step Into is enabled before debugging starts.")
 ok(isEnabled(ID.STEPOVER), "Step Over is enabled before debugging starts.")
 ok(isEnabled(ID.RUNTO), "Run To Cursor is enabled before debugging starts.")
+editor:GotoLine(logpointLine - 1)
+ok(isEnabled(ID.BREAKPOINTOPTIONS), "Breakpoint Settings is enabled on an existing breakpoint.")
+editor:GotoLine(0)
 local function dispatch(id)
   frame:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, id))
 end
@@ -107,6 +137,20 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
   ok(wx.wxFileName(file):SameAs(wx.wxFileName(afile)), "Filename is reported as expected after debugger activation ("..command.."/"..#commands..").")
   is(line, aline, "Line number is reported as expected after debugger activation ("..command.."/"..#commands..").")
   if debugger:IsRunning() then debugger:Wait() end
+  if command == 4 then
+    ok(debugger:GetBreakpointOptions(editor, logpointLine - 1) ~= nil,
+      "Run To Cursor at a logpoint keeps the breakpoint settings.")
+    ok(ide:GetOutput():GetText():find("Advanced breakpoint: a=", 1, true) ~= nil,
+      "An interpolated logpoint message appears in the Output window.")
+  elseif command == 9 then
+    ok(ide:GetOutput():GetText():find("Entry breakpoint output", 1, true) ~= nil,
+      "F5 reports an entry logpoint without stopping there.")
+  elseif command == 10 then
+    debugger:EvalAsync("i", function(value)
+      is(value, "3", "The hit threshold counts only visits that pass the condition.")
+    end)
+    debugger:Wait()
+  end
   if command == 1 then
     ok(isEnabled(ID.STARTDEBUG) and isEnabled(ID.STEP) and isEnabled(ID.RUNTO)
       and isEnabled(ID.STOPDEBUG) and not isEnabled(ID.BREAK), "Debug actions reflect a paused session.")
@@ -355,6 +399,7 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
           runToCursor(5)
         else
           editor:BreakpointToggle(nextBreakpointLine - 1, true)
+          ide:GetDebugger():SetBreakpointOptions(editor, nextBreakpointLine - 1, {condition = "i >= 2", hitCount = 2})
           dispatch(ID.STARTDEBUG)
         end
         local started = ide:GetLaunchedProcess() ~= nil

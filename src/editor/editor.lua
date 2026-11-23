@@ -882,17 +882,21 @@ function CreateEditor(bare)
     editor:EnsureVisibleEnforcePolicy(line)
     return line
   end
-  function editor:MarkerToggle(marker, line, value)
+  function editor:MarkerToggle(marker, line, value, options)
     if type(marker) == "string" then marker = StylesGetMarker(marker) end
     assert(marker ~= nil, "Marker update requires known marker type")
     line = line or editor:GetCurrentLine()
     local isset = bit.band(editor:MarkerGet(line), 2^marker) > 0
     if value ~= nil and isset == value then return end
-    if PackageEventHandle("onEditorMarkerUpdate", editor, marker, line+1, not isset) == false then return end
+    if PackageEventHandle("onEditorMarkerUpdate", editor, marker, line+1, not isset, options) == false then return end
     if isset then
       editor:MarkerDelete(line, marker)
     else
-      editor:MarkerAdd(line, marker)
+      local handle = editor:MarkerAdd(line, marker)
+      if options and marker == StylesGetMarker("breakpoint") then
+        editor.breakpointOptions = editor.breakpointOptions or {}
+        editor.breakpointOptions[handle] = options
+      end
     end
   end
 

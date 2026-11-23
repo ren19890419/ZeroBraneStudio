@@ -118,6 +118,7 @@ local abort -- default value is nil; this is used in start/loop distinction
 local seen_hook = false
 local checkcount = 0
 local step_into = false
+local entering = false
 local step_over = false
 local step_level = 0
 local stack_level = 0
@@ -378,11 +379,11 @@ local function describeLocalType(value, depth, maxnum, seen)
   return fields
 end
 
-local function set_breakpoint(file, line)
+local function set_breakpoint(file, line, options)
   if file == '-' and lastfile then file = lastfile
   elseif iscasepreserving then file = string.lower(file) end
   if not breakpoints[line] then breakpoints[line] = {} end
-  breakpoints[line][file] = true
+  breakpoints[line][file] = options or true
 end
 
 local function remove_breakpoint(file, line)
@@ -392,9 +393,116 @@ local function remove_breakpoint(file, line)
   if breakpoints[line] then breakpoints[line][file] = nil end
 end
 
-local function has_breakpoint(file, line)
+local function get_breakpoint(file, line)
   return breakpoints[line]
      and breakpoints[line][iscasepreserving and string.lower(file) or file]
+end
+
+local function compile_breakpoint_options(request)
+  local condition, hitCount, log = request.condition, request.hitCount, request.log
+  if (condition ~= nil and type(condition) ~= "string") or (log ~= nil and type(log) ~= "string") then
+    return nil, "The condition and log message must be text."
+  end
+  if hitCount ~= nil and (type(hitCount) ~= "number" or hitCount < 1
+  or hitCount > 9007199254740991 or hitCount % 1 ~= 0) then
+    return nil, "Hit count must be a positive integer."
+  end
+  local result = {hitCount = hitCount, hits = 0}
+  if condition and condition ~= "" then
+    local func, err = mobdebug.loadstring("return ("..condition..")", "=(breakpoint condition)")
+    if not func then return nil, err end
+    result.condition = func
+  end
+  if log and log ~= "" then
+    local parts, pos = {}, 1
+    for text, expression, nextpos in log:gmatch("(.-)(%b{})()") do
+      parts[#parts+1] = text
+      local func, err = mobdebug.loadstring("return ("..expression:sub(2, -2)..")", "=(logpoint expression)")
+      if not func then return nil, err end
+      parts[#parts+1] = func
+      pos = nextpos
+    end
+    parts[#parts+1] = log:sub(pos)
+    result.log = parts
+  end
+  return result
+end
+
+function mobdebug.validatebreakpoint(options)
+  local result, err = compile_breakpoint_options(options)
+  return result ~= nil, err
+end
+
+local function decode_breakpoint_request(data)
+  if not data then return end
+  local ok, request = serpent.load(data)
+  if ok and type(request) == "table" and type(request.file) == "string" and request.file ~= ""
+  and type(request.line) == "number" and request.line >= 1 and request.line % 1 == 0
+  and (request.temporary == nil or type(request.temporary) == "boolean") then
+    return request
+  end
+end
+
+local function configure_breakpoint(request)
+  local file, line = request.file, request.line
+  if request.temporary ~= nil then
+    local bp = get_breakpoint(file, line)
+    if type(bp) ~= "table" then return nil, "No breakpoint settings at this location." end
+    bp.temporary = request.temporary
+  else
+    local bp, err = compile_breakpoint_options(request)
+    if not bp then return nil, err end
+    local previous = get_breakpoint(file, line)
+    if type(previous) == "table" then bp.temporary = previous.temporary end
+    set_breakpoint(file, line, bp)
+  end
+  return true
+end
+
+local function breakpoint_stops(bp, vars, nargs, file, line)
+  if bp == true then return true end
+  local temporary = bp.temporary
+  bp.temporary = nil
+  local location = file..":"..line..": "
+  local function report(message)
+    local text = location..message
+    server:send("204 Output logpoint "..#text.."\n"..text)
+  end
+  local function evaluate(func)
+    setfenv(func, vars)
+    local ok, result = pcall(func, unpack(vars["..."], 1, nargs))
+    setfenv(func, genv)
+    return ok, result
+  end
+  local function error_text(value)
+    local ok, text = pcall(tostring, value)
+    return ok and text or type(value)
+  end
+  if bp.condition then
+    local ok, result = evaluate(bp.condition)
+    if not ok then
+      report("Breakpoint condition: "..error_text(result))
+      return temporary or not bp.log
+    end
+    if not result then return temporary end
+  end
+  bp.hits = bp.hits + 1
+  if bp.hitCount and bp.hits < bp.hitCount then return temporary end
+  if bp.log then
+    local parts = {}
+    for i, part in ipairs(bp.log) do
+      if type(part) == "string" then
+        parts[i] = part
+      else
+        local ok, value = evaluate(part)
+        if ok then ok, value = pcall(tostring, value) end
+        parts[i] = ok and value or "<error: "..error_text(value)..">"
+      end
+    end
+    report(table.concat(parts))
+    return temporary
+  end
+  return true
 end
 
 local function restore_vars(vars)
@@ -789,6 +897,16 @@ local function debug_hook(event, line)
       end
     end
 
+    local at_entry = entering
+    entering = false
+    local bp = get_breakpoint(file, line)
+    local stop = bp == true
+    -- At startup the controller has yet to send an execution command.
+    if type(bp) == "table" and not at_entry then
+      local env, nargs = capture_vars(1, nil, true)
+      stop = breakpoint_stops(bp, env, nargs, file, line)
+    end
+
     -- need to get into the "regular" debug handler, but only if there was
     -- no watch that was fired. If there was a watch, handle its result.
     local getin = (status == nil) and
@@ -796,7 +914,7 @@ local function debug_hook(event, line)
       -- when coroutine.running() return `nil` (main thread in Lua 5.1),
       -- step_over will equal 'main', so need to check for that explicitly.
       or (step_over and step_over == (coroutine.running() or 'main') and stack_level <= step_level)
-      or has_breakpoint(file, line)
+      or stop
       or is_pending(server))
 
     if getin then
@@ -806,10 +924,17 @@ local function debug_hook(event, line)
       status, res, request = cororesume(coro_debugger, events.BREAK, vars, file, line)
     end
 
-    -- Read and edit variables in the paused program's coroutine.
-    while status and (res == 'stack' or res == 'setlocal' or res == 'execframe') do
+    -- Handle commands that need the paused program's coroutine.
+    while status and (res == 'stack' or res == 'setlocal' or res == 'execframe' or res == 'runentry') do
       if vars then restore_vars(vars) end -- restore vars so they are reflected in stack values
-      if res == 'stack' then
+      if res == 'runentry' then
+        local entry = get_breakpoint(file, line)
+        if type(entry) ~= "table" then res = nil; break end
+        local env, nargs = capture_vars(1, nil, true)
+        if not breakpoint_stops(entry, env, nargs, file, line) then res = nil; break end
+        vars = capture_vars(1)
+        status, res, request = cororesume(coro_debugger, events.BREAK, vars, file, line)
+      elseif res == 'stack' then
         status, res, request = cororesume(coro_debugger, events.STACK, stack(3), file, line)
       elseif res == 'execframe' then
         local result = pack(execute_in_frame(request))
@@ -889,12 +1014,14 @@ local function done()
   coro_debugger = nil -- to make sure isrunning() returns `false`
   seen_hook = nil -- to make sure that the next start() call works
   abort = nil -- to make sure that callback calls use proper "abort" value
+  entering = false
   basedir = "" -- to reset basedir in case the same module/state is reused
 end
 
 local function debugger_loop(sev, svars, sfile, sline)
   local command
   local eval_env = svars or {}
+  local at_entry = sev == events.BREAK
   local function emptyWatch () return false end
   local loaded = {}
   for k in pairs(package.loaded) do loaded[k] = true end
@@ -925,6 +1052,18 @@ local function debugger_loop(sev, svars, sfile, sline)
       if file and line then
         set_breakpoint(file, tonumber(line))
         server:send("200 OK\n")
+      else
+        server:send("400 Bad Request\n")
+      end
+    elseif command == "SETX" then
+      local request = decode_breakpoint_request(line:match("^SETX%s+(.+)$"))
+      if request then
+        local ok, err = configure_breakpoint(request)
+        if ok then
+          server:send("200 OK\n")
+        else
+          server:send("401 Error in Expression "..#err.."\n"..err)
+        end
       else
         server:send("400 Bad Request\n")
       end
@@ -1020,7 +1159,7 @@ local function debugger_loop(sev, svars, sfile, sline)
             if func then
               server:send("200 OK 0\n")
               debugee = func
-              coroyield("load")
+              at_entry = coroyield("load") == events.BREAK
             else
               server:send("401 Error in Expression " .. tostring(#res) .. "\n")
               server:send(res)
@@ -1059,7 +1198,9 @@ local function debugger_loop(sev, svars, sfile, sline)
     elseif command == "RUN" then
       server:send("200 OK\n")
 
-      local ev, vars, file, line, idx_watch = coroyield()
+      local entry = at_entry
+      at_entry = false
+      local ev, vars, file, line, idx_watch = coroyield(entry and "runentry" or nil)
       eval_env = vars
       if ev == events.BREAK then
         server:send("202 Paused " .. file .. " " .. tostring(line) .. "\n")
@@ -1073,6 +1214,7 @@ local function debugger_loop(sev, svars, sfile, sline)
       end
     elseif command == "STEP" then
       server:send("200 OK\n")
+      at_entry = false
       step_into = true
 
       local ev, vars, file, line, idx_watch = coroyield()
@@ -1089,6 +1231,7 @@ local function debugger_loop(sev, svars, sfile, sline)
       end
     elseif command == "OVER" or command == "OUT" then
       server:send("200 OK\n")
+      at_entry = false
       step_over = true
 
       -- OVER and OUT are very similar except for
@@ -1237,6 +1380,7 @@ local function start(controller_host, controller_port)
     coro_debugger = corocreate(debugger_loop)
     debug.sethook(debug_hook, HOOKMASK)
     seen_hook = nil -- reset in case the last start() call was refused
+    entering = true
     step_into = true -- start with step command
     return true
   else
@@ -1270,6 +1414,7 @@ local function controller(controller_host, controller_port, scratchpad)
     coro_debugger = corocreate(debugger_loop)
 
     while true do
+      entering = true
       step_into = true -- start with step command
       abort = false -- reset abort flag from the previous loop
       if scratchpad then checkcount = mobdebug.checkcount end -- force suspend right away
@@ -1377,10 +1522,20 @@ local function handle(params, client, options)
   local print = verbose and (type(verbose) == "function" and verbose or print) or function() end
   local file, line, watch_idx
   local _, _, command = string.find(params, "^([a-z]+)")
+  local function report_output(stream, size)
+    local msg = size == 0 and "" or client:receive(size)
+    if not msg then return end
+    if stream == "logpoint" and options and options.logpoint then
+      options.logpoint(msg)
+    else
+      print(msg)
+      if outputs[stream] then outputs[stream](msg) end
+    end
+  end
   if command == "run" or command == "step" or command == "out"
   or command == "over" or command == "exit" then
     client:send(string.upper(command) .. "\n")
-    client:receive("*l") -- this should consume the first '200 OK' response
+    client:receive("*l") -- consume the first '200 OK' response
     while true do
       local done = true
       local breakpoint = client:receive("*l")
@@ -1404,10 +1559,7 @@ local function handle(params, client, options)
       elseif status == "204" then
         local _, _, stream, size = string.find(breakpoint, "^204 Output (%w+) (%d+)$")
         if stream and size then
-          local size = tonumber(size)
-          local msg = size > 0 and client:receive(size) or ""
-          print(msg)
-          if outputs[stream] then outputs[stream](msg) end
+          report_output(stream, tonumber(size))
           -- this was just the output, so go back reading the response
           done = false
         end
@@ -1440,9 +1592,24 @@ local function handle(params, client, options)
         set_breakpoint(file, line)
       else
         print("Error: breakpoint not inserted")
+        return nil, nil, "Could not set the breakpoint."
       end
     else
       print("Invalid command")
+    end
+  elseif command == "setx" then
+    local request = decode_breakpoint_request(params:match("^setx%s+(.+)$"))
+    if not request then return nil, nil, "Invalid breakpoint settings." end
+    if not request.file:find('^".*"$') then
+      request.file = removebasedir(request.file:gsub("\\", "/"), basedir)
+    end
+    client:send("SETX "..serpent.line(request, {comment = false}).."\n")
+    local answer = client:receive("*l")
+    if answer ~= "200 OK" then
+      local size = answer and answer:match("^401 Error in Expression (%d+)$")
+      return nil, nil, size and client:receive(tonumber(size)) or
+        (answer == "400 Bad Request" and "The debug client does not support breakpoint options."
+          or "Could not set breakpoint options.")
     end
   elseif command == "setw" then
     local _, _, exp = string.find(params, "^[a-z]+%s+(.+)$")
@@ -1587,10 +1754,7 @@ local function handle(params, client, options)
         elseif status == "204" then
           local _, _, stream, size = string.find(params, "^204 Output (%w+) (%d+)$")
           if stream and size then
-            local size = tonumber(size)
-            local msg = size > 0 and client:receive(size) or ""
-            print(msg)
-            if outputs[stream] then outputs[stream](msg) end
+            report_output(stream, tonumber(size))
             -- this was just the output, so go back reading the response
             done = false
           end

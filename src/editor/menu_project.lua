@@ -39,6 +39,7 @@ local debugMenu = ide:MakeMenu {
   { },
   { ID_BREAKPOINT, TR("Breakpoint")..KSC(ID_BREAKPOINT), "", {
     { ID_BREAKPOINTTOGGLE, TR("Toggle Breakpoint")..KSC(ID_BREAKPOINTTOGGLE) },
+    { ID_BREAKPOINTOPTIONS, TR("Breakpoint Settings").."..." },
     { ID_BREAKPOINTNEXT, TR("Go To Next Breakpoint")..KSC(ID_BREAKPOINTNEXT) },
     { ID_BREAKPOINTPREV, TR("Go To Previous Breakpoint")..KSC(ID_BREAKPOINTPREV) },
   } },
@@ -352,6 +353,17 @@ frame:Connect(ID_BREAKPOINTTOGGLE, wx.wxEVT_UPDATE_UI,
     local editor = ide:GetEditorWithFocus(ide:GetEditor())
     event:Enable(ide.interpreter and ide.interpreter.hasdebugger and (not debugger.scratchpad)
       and (editor ~= nil) and (not editor:IsLineEmpty()))
+  end)
+
+frame:Connect(ID_BREAKPOINTOPTIONS, wx.wxEVT_COMMAND_MENU_SELECTED,
+  function()
+    local editor = ide:GetEditor()
+    if editor then ide:GetDebugger():EditBreakpointOptions(editor, editor:GetCurrentLine()) end
+  end)
+frame:Connect(ID_BREAKPOINTOPTIONS, wx.wxEVT_UPDATE_UI,
+  function(event)
+    local editor = ide:GetEditor()
+    event:Enable(editor and ide:GetDebugger():CanEditBreakpoint(editor, editor:GetCurrentLine()) or false)
   end)
 
 frame:Connect(ID_BREAKPOINTNEXT, wx.wxEVT_COMMAND_MENU_SELECTED,

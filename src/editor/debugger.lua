@@ -48,6 +48,31 @@ local function fixUTF8(...)
   return unpack(t)
 end
 
+function debugger:GetBreakpointOptions(editor, line)
+  for handle, options in pairs(editor.breakpointOptions or {}) do
+    local current = editor:MarkerLineFromHandle(handle)
+    if current == line then return options, handle end
+    if current == wx.wxNOT_FOUND then editor.breakpointOptions[handle] = nil end
+  end
+end
+
+local function breakpointCommand(file, line, options, temporary)
+  if options or temporary ~= nil then
+    options = options or {}
+    return "setx "..serialize({file = file, line = line, condition = options.condition,
+      hitCount = options.hitCount, log = options.log, temporary = temporary}, {comment = false})
+  end
+  return "setb "..file.." "..line
+end
+
+function debugger:syncBreakpoint(file, line, options)
+  local _, _, err = self:handle(breakpointCommand(file, line, options))
+  if err then
+    displayError(TR("Could not set the breakpoint at %s:%d."):format(file, line).." "..fixUTF8(TR(err)))
+  end
+  return err
+end
+
 local q = EscapeMagic
 local MORE = "{...}"
 
@@ -734,10 +759,10 @@ function debugger:ActivateDocument(file, line, activatehow)
           if line == math.huge then line = 1 end
         end
         if debugger.runtocursor then
-          local ed, ln = unpack(debugger.runtocursor)
+          local ed, ln, advanced = unpack(debugger.runtocursor)
           if ed:GetId() == editor:GetId() and ln == line then
             -- remove run-to breakpoint at this location
-            debugger:breakpointToggle(ed, ln, false)
+            if not advanced then debugger:breakpointToggle(ed, ln, false) end
             debugger.runtocursor = nil
           end
         end
@@ -773,7 +798,7 @@ function debugger:ActivateDocument(file, line, activatehow)
           local line = editor:MarkerNext(0, BREAKPOINT_MARKER_VALUE)
           while filePath and line ~= -1 do
             debugger:handle("delb " .. filePath .. " " .. (line+1))
-            debugger:handle("setb " .. file .. " " .. (line+1))
+            debugger:syncBreakpoint(file, line+1, debugger:GetBreakpointOptions(editor, line))
             line = editor:MarkerNext(line + 1, BREAKPOINT_MARKER_VALUE)
           end
         end
@@ -825,7 +850,7 @@ function debugger:reSetBreakpoints()
       local filePath = document:GetFilePath()
       local line = editor:MarkerNext(0, BREAKPOINT_MARKER_VALUE)
       while filePath and line ~= -1 do
-        debugger:handle("setb " .. filePath .. " " .. (line+1))
+        debugger:syncBreakpoint(filePath, line+1, debugger:GetBreakpointOptions(editor, line))
         line = editor:MarkerNext(line + 1, BREAKPOINT_MARKER_VALUE)
       end
     end
@@ -907,7 +932,7 @@ function debugger:shell(expression, isstatement)
   end
 end
 
-function debugger:stoppedAtBreakpoint(file, line, runTo)
+function debugger:stoppedAtBreakpoint(file, line, runTo, starting)
   local editor = self:ActivateDocument(file, line, activate.CHECKONLY)
   if not editor then return false end
 
@@ -916,6 +941,10 @@ function debugger:stoppedAtBreakpoint(file, line, runTo)
   local target = runTo and runTo.line == current + 1 and ide:FindDocument(runTo.filename)
   if target and editor:GetId() == target:GetEditor():GetId() then return true end
   local breakpoint = editor:MarkerNext(current, BREAKPOINT_MARKER_VALUE)
+  if starting and breakpoint == current and breakpoint ~= wx.wxNOT_FOUND
+  and self:GetBreakpointOptions(editor, breakpoint) then
+    return false
+  end
   return breakpoint ~= wx.wxNOT_FOUND and breakpoint == current
 end
 
@@ -1112,7 +1141,7 @@ function debugger:Listen(start)
           return debugger:terminate()
         elseif runstart and not debugger.scratchpad then
           if runTo then file, line = file or startwith, line or 0 end
-          if debugger:stoppedAtBreakpoint(file, line, runTo) then
+          if debugger:stoppedAtBreakpoint(file, line, runTo, true) then
             debugger:ActivateDocument(file, line)
             runstart = false
           end
@@ -1138,7 +1167,7 @@ function debugger:Listen(start)
           local file = (debugger:mapRemotePath(basedir, file, line or 0, activate.CHECKONLY)
             or file or startfile)
 
-          if debugger:stoppedAtBreakpoint(file, line or 0, runTo) then
+          if debugger:stoppedAtBreakpoint(file, line or 0, runTo, true) then
             debugger:ActivateDocument(file, line or 0)
             runstart = false
           end
@@ -1232,6 +1261,7 @@ function debugger:handle(command, server, options)
   local verbose = ide.config.debugger.verbose
   options = options or {}
   options.verbose = verbose and (function(...) ide:Print(...) end) or false
+  options.logpoint = function(message) ide:Print(fixUTF8(message)) end
 
   local ip, port = debugger.socket:getpeername()
   PackageEventHandle("onDebuggerCommand", debugger, command, server or debugger.server, options)
@@ -1440,33 +1470,52 @@ function debugger:RunTo(editor, line)
   -- check if the location is valid for a breakpoint
   if editor:IsLineEmpty(line-1) then return end
 
-  local ed, ln = unpack(debugger.runtocursor or {})
+  local ed, ln, previousAdvanced = unpack(debugger.runtocursor or {})
   local same = ed and ln and ed:GetId() == editor:GetId() and ln == line
+  local advanced = debugger:GetBreakpointOptions(editor, line-1) ~= nil
 
   -- check if there is already a breakpoint in the "run to" location;
   -- if so, don't mark the location as "run to" as it will stop there anyway
   if bit.band(editor:MarkerGet(line-1), BREAKPOINT_MARKER_VALUE) > 0
-  and not same then
+  and not advanced and not same then
+    if ed then
+      debugger:exec("run", function() debugger:clearRunTo(ed, ln, previousAdvanced) end)
+    else
+      debugger:Run()
+    end
     debugger.runtocursor = nil
-    debugger:Run()
     return
   end
 
   -- save the location of the breakpoint
-  debugger.runtocursor = {editor, line}
+  debugger.runtocursor = {editor, line, advanced}
   -- set breakpoint and execute run
   debugger:exec("run", function()
       -- if run-to-cursor location is already set, then remove the breakpoint,
       -- but only if this location is different
       if ed and ln and not same then
-        debugger:breakpointToggle(ed, ln, false) -- remove earlier run-to breakpoint
-        debugger:Wait()
+        debugger:clearRunTo(ed, ln, previousAdvanced)
       end
       if not same then
-        debugger:breakpointToggle(editor, line, true) -- set new run-to breakpoint
-        debugger:Wait()
+        if advanced then
+          local file = debugger:breakpointFile(editor)
+          local _, _, err = debugger:handle(breakpointCommand(file, line, nil, true))
+          if not err then return end
+          -- Older clients can still run to this location using a regular breakpoint.
+          debugger.runtocursor[3] = false
+        end
+        debugger:syncBreakpoint(debugger:breakpointFile(editor), line)
       end
     end)
+end
+function debugger:clearRunTo(editor, line, advanced)
+  if not ide:IsValidCtrl(editor) then return end
+  local file = self:breakpointFile(editor)
+  if advanced then
+    self:handle(breakpointCommand(file, line, nil, false))
+  else
+    self:handle("delb "..file.." "..line)
+  end
 end
 function debugger:Wait()
   local debugger = self
@@ -1521,8 +1570,14 @@ function debugger:Break(command)
     return file, line, err
   end
 end
-function debugger:breakpoint(file, line, state)
+function debugger:breakpoint(file, line, state, options)
   local debugger = self
+  if state and options then
+    if debugger.server and not debugger.running then
+      copas.addthread(function() debugger:syncBreakpoint(file, line, options) end)
+    end
+    return
+  end
   if debugger.running then
     return debugger:handleDirect((state and "asetb " or "adelb ") .. file .. " " .. line)
   end
@@ -2386,8 +2441,8 @@ function debugger:teardown()
     ide:Print(TR("Debugging session completed (%s)."):format(lines))
     debugger:UpdateStatus(ide:GetLaunchedProcess() and "running" or "stopped")
     if debugger.runtocursor then
-      local ed, ln = unpack(debugger.runtocursor)
-      debugger:breakpointToggle(ed, ln, false) -- remove current run-to breakpoint
+      local ed, ln, advanced = unpack(debugger.runtocursor)
+      if not advanced and ide:IsValidCtrl(ed) then debugger:breakpointToggle(ed, ln, false) end
     end
     if PackageEventHandle("onDebuggerPreClose", debugger) ~= false then
       SetAllEditorsReadOnly(false)
@@ -2412,10 +2467,95 @@ local function debuggerMakeFileName(editor)
   or ide:GetDefaultFileName()
 end
 
-function debugger:breakpointToggle(editor, line, value)
-  local debugger = self
-  local file = debugger.editormap and debugger.editormap[editor] or debuggerMakeFileName(editor)
-  debugger:BreakpointSet(file, line, value)
+function debugger:breakpointFile(editor)
+  return self.editormap and self.editormap[editor] or debuggerMakeFileName(editor)
+end
+
+function debugger:breakpointToggle(editor, line, value, options)
+  self:BreakpointSet(self:breakpointFile(editor), line, value, options)
+end
+
+function debugger:CanEditBreakpoint(editor, line)
+  return editor and line >= 0 and not self.scratchpad and not self.running
+    and bit.band(editor:MarkerGet(line), BREAKPOINT_MARKER_VALUE) ~= 0
+end
+
+function debugger:SetBreakpointOptions(editor, line, options, callback)
+  if not self:CanEditBreakpoint(editor, line) then return end
+  local function update()
+    if not ide:IsValidCtrl(editor) then return end
+    if bit.band(editor:MarkerGet(line), BREAKPOINT_MARKER_VALUE) == 0 then return end
+    local _, handle = self:GetBreakpointOptions(editor, line)
+    if handle then editor.breakpointOptions[handle] = nil end
+    if options then
+      if not handle then
+        editor:MarkerDelete(line, BREAKPOINT_MARKER)
+        handle = editor:MarkerAdd(line, BREAKPOINT_MARKER)
+      end
+      editor.breakpointOptions = editor.breakpointOptions or {}
+      editor.breakpointOptions[handle] = options
+    end
+    ide.markers:SaveMarkers(editor)
+  end
+  if self.server then
+    local file = self:breakpointFile(editor)
+    copas.addthread(function()
+        local err = self:syncBreakpoint(file, line+1, options)
+        if not err then update() end
+        if callback then callback(err) end
+      end)
+  else
+    update()
+    if callback then callback() end
+  end
+end
+
+function debugger:EditBreakpointOptions(editor, line)
+  if not self:CanEditBreakpoint(editor, line) then return end
+  local options = self:GetBreakpointOptions(editor, line) or {}
+  local dialog = wx.wxDialog(ide:GetMainFrame(), wx.wxID_ANY, TR("Breakpoint Settings"))
+  local form = wx.wxFlexGridSizer(0, 2, 8, 10)
+  form:AddGrowableCol(1)
+  local function field(label, value)
+    form:Add(wx.wxStaticText(dialog, wx.wxID_ANY, TR(label)), 0, wx.wxALIGN_CENTER_VERTICAL)
+    local control = wx.wxTextCtrl(dialog, wx.wxID_ANY, value, wx.wxDefaultPosition, wx.wxSize(350, -1))
+    form:Add(control, 1, wx.wxEXPAND)
+    return control
+  end
+  local condition = field("Condition", options.condition or "")
+  local count = field("Hit Count", options.hitCount and tostring(options.hitCount) or "")
+  local log = field("Log Message", options.log or "")
+  local help = wx.wxStaticText(dialog, wx.wxID_ANY, TR("Hit count starts at 1 and counts visits that meet the condition.")
+    .."\n"..TR("A log message continues execution and can include {Lua expressions}."))
+  local box = wx.wxBoxSizer(wx.wxVERTICAL)
+  box:Add(form, 0, wx.wxALL + wx.wxEXPAND, 12)
+  box:Add(help, 0, wx.wxLEFT + wx.wxRIGHT + wx.wxBOTTOM, 12)
+  box:Add(dialog:CreateButtonSizer(wx.wxOK + wx.wxCANCEL), 0, wx.wxLEFT + wx.wxRIGHT + wx.wxBOTTOM + wx.wxEXPAND, 12)
+  dialog:SetSizerAndFit(box)
+  condition:SetFocus()
+
+  while dialog:ShowModal() == wx.wxID_OK do
+    local expression = condition:GetValue():match("^%s*(.-)%s*$")
+    local visits = count:GetValue():match("^%s*(.-)%s*$")
+    local message = log:GetValue()
+    local settings = {
+      condition = expression ~= "" and expression or nil,
+      hitCount = tonumber(visits),
+      log = message ~= "" and message or nil,
+    }
+    local ok, err
+    if visits == "" or visits:match("^%d+$") then
+      ok, err = mobdebug.validatebreakpoint(settings)
+    else
+      err = "Hit count must be a positive integer."
+    end
+    if ok then
+      self:SetBreakpointOptions(editor, line, next(settings) and settings or nil)
+      break
+    end
+    wx.wxMessageBox(TR(err), TR("Breakpoint Settings"), wx.wxOK + wx.wxICON_ERROR, dialog)
+  end
+  dialog:Destroy()
 end
 
 -- scratchpad functions
@@ -2685,7 +2825,7 @@ end
 debugger = ide:SetDebugger(setmetatable({}, {__index = protodeb}))
 
 ide:AddPackage('core.debugger', {
-    onEditorMarkerUpdate = function(self, editor, marker, line, value)
+    onEditorMarkerUpdate = function(self, editor, marker, line, value, options)
       if marker ~= BREAKPOINT_MARKER then return end
 
       local debugger = ide:GetDebugger()
@@ -2698,6 +2838,6 @@ ide:AddPackage('core.debugger', {
         return false -- don't set marker here
       end
 
-      return debugger:breakpointToggle(editor, line, value)
+      return debugger:breakpointToggle(editor, line, value, options)
     end,
   })

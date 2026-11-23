@@ -404,4 +404,13 @@ return {
   ["on line %d"] = "在第 %d 行", -- src\editor\debugger.lua, src\editor\editor.lua, src\editor\commands.lua
   ["traced %d instruction"] = "追踪 %d 个指令", -- src\editor\debugger.lua
   ["unknown error"] = "未知的错误", -- src\editor\debugger.lua
+  ["Breakpoint Settings"] = "断点设置",
+  ["Condition"] = "条件",
+  ["Hit Count"] = "命中次数",
+  ["Log Message"] = "日志消息",
+  ["Hit count starts at 1 and counts visits that meet the condition."] = "从第 1 次命中开始计数，只统计满足条件的命中。",
+  ["A log message continues execution and can include {Lua expressions}."] = "填写日志消息后，命中时输出日志并继续运行。消息中可使用 {Lua 表达式}。",
+  ["Hit count must be a positive integer."] = "命中次数必须是正整数。",
+  ["Could not set the breakpoint at %s:%d."] = "无法设置 %s:%d 处的断点。",
+  ["The debug client does not support breakpoint options."] = "当前调试客户端不支持断点设置。",
 }
