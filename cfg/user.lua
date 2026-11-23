@@ -1,0 +1,11 @@
+-- Visual Studio debugging shortcuts.
+keymap[ID.STARTDEBUG] = "F5"
+keymap[ID.RUN] = "Ctrl-F5"
+keymap[ID.STOPDEBUG] = "Shift-F5"
+keymap[ID.STEP] = "F11"
+keymap[ID.STEPOVER] = "F10"
+keymap[ID.STEPOUT] = "Shift-F11"
+keymap[ID.RUNTO] = "Ctrl-F10"
+keymap[ID.BREAKPOINTTOGGLE] = "F9"
+keymap[ID.BREAKPOINTNEXT] = "Ctrl-F9"
+keymap[ID.BREAKPOINTPROJECTCLEAR] = "Ctrl-Shift-F9"
