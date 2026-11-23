@@ -43,6 +43,9 @@ local debugMenu = ide:MakeMenu {
     { ID_BREAKPOINTPREV, TR("Go To Previous Breakpoint")..KSC(ID_BREAKPOINTPREV) },
   } },
   { },
+  { ID_DEBUGWATCHWINDOW, TR("&Watch Window")..KSC(ID_DEBUGWATCHWINDOW), TR("View the watch window") },
+  { ID_DEBUGCALLSTACK, TR("&Stack Window")..KSC(ID_DEBUGCALLSTACK), TR("View the stack window") },
+  { },
   { ID_ATTACHDEBUG, TR("&Start Debugger Server")..KSC(ID_ATTACHDEBUG), TR("Allow external process to start debugging"), wx.wxITEM_CHECK },
   { ID_DETACHDEBUG, TR("Detach &Process")..KSC(ID_DETACHDEBUG), TR("Stop debugging and continue running the process") },
 }
@@ -524,6 +527,28 @@ frame:Connect(ID_BREAK, wx.wxEVT_UPDATE_UI,
       and (debugger:IsRunning()
            or (debugger.scratchpad and not debugger.scratchpad.paused)))
   end)
+
+local debugWindows = {
+  [ID_DEBUGWATCHWINDOW] = ide.GetWatch,
+  [ID_DEBUGCALLSTACK] = ide.GetStack,
+}
+local function getDebugWindow(id)
+  if not ide:GetDebugger():IsConnected() then return end
+  local window = debugWindows[id](ide)
+  return ide:IsValidCtrl(window) and window or nil
+end
+
+for id in pairs(debugWindows) do
+  frame:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function(event)
+    local window = getDebugWindow(event:GetId())
+    if not window then return end
+    ide:ActivateNotebookPage(window)
+    window:SetFocus()
+    ide:GetDebugger():RefreshPanels()
+  end)
+  frame:Connect(id, wx.wxEVT_UPDATE_UI,
+    function(event) event:Enable(getDebugWindow(event:GetId()) ~= nil) end)
+end
 
 frame:Connect(ID_COMMANDLINEPARAMETERS, wx.wxEVT_COMMAND_MENU_SELECTED,
   function ()

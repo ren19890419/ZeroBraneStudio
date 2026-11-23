@@ -415,6 +415,23 @@ function ide:GetOutput() return self.frame.bottomnotebook.errorlog end
 function ide:GetConsole() return self.frame.bottomnotebook.shellbox end
 function ide:GetEditorNotebook() return self.frame.notebook end
 function ide:GetOutputNotebook() return self.frame.bottomnotebook end
+function ide:ActivateNotebookPage(window)
+  local parent = window:GetParent()
+  if not parent or parent:GetClassInfo():GetClassName() ~= "wxAuiNotebook" then return end
+  local notebook = parent:DynamicCast("wxAuiNotebook")
+  local index = notebook:GetPageIndex(window)
+  if index == wx.wxNOT_FOUND then return end
+
+  local mgr = self:GetUIManager()
+  local pane = mgr:GetPane(notebook)
+  if pane:IsOk() and not pane:IsShown() then
+    pane:Show(true)
+    mgr:Update()
+  end
+  if notebook:GetSelection() == index then return false end
+  notebook:SetSelection(index)
+  return true
+end
 function ide:GetOutline() return self.outline end
 function ide:GetProjectNotebook() return self.frame.projnotebook end
 function ide:GetProject()
@@ -785,23 +802,7 @@ function ide:CreateStyledTextCtrl(...)
   function editor:Activate(force)
     -- check for `activateoutput` if the current component is the same as `Output`
     if self == ide:GetOutput() and not ide.config.activateoutput and not force then return end
-
-    local nb = self:GetParent()
-    -- check that the parent is of the correct type
-    if nb:GetClassInfo():GetClassName() ~= "wxAuiNotebook" then return end
-    nb = nb:DynamicCast("wxAuiNotebook")
-
-    local uimgr = ide:GetUIManager()
-    local pane = uimgr:GetPane(nb)
-    if pane:IsOk() and not pane:IsShown() then
-      pane:Show(true)
-      uimgr:Update()
-    end
-    -- activate output/errorlog window
-    local index = nb:GetPageIndex(self)
-    if nb:GetSelection() == index then return false end
-    nb:SetSelection(index)
-    return true
+    return ide:ActivateNotebookPage(self)
   end
 
   function editor:GetModifiedTime() return self.updated end

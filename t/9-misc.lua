@@ -99,6 +99,9 @@ ok(debugMenu and debugMenu:FindItem(ID.STEP) ~= nil and debugMenu:FindItem(ID.RU
 ok(projectMenu and projectMenu:FindItem(ID.RUN) ~= nil and projectMenu:FindItem(ID.COMPILE) ~= nil,
   "Project menu provides Run and Compile.")
 ok(projectMenu and projectMenu:FindItem(ID.STARTDEBUG) == nil, "Start Debugging has a single menu entry.")
+ok(debugMenu and ID.DEBUGWATCHWINDOW ~= nil and debugMenu:FindItem(ID.DEBUGWATCHWINDOW) ~= nil
+  and ID.DEBUGCALLSTACK ~= nil and debugMenu:FindItem(ID.DEBUGCALLSTACK) ~= nil,
+  "Debug menu provides Watch Window and Call Stack commands.")
 
 local at = ide:GetAccelerators()
 ok(next(at) ~= nil, "One or more accelerator is set in the accelerator table.")

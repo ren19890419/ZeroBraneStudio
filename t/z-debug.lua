@@ -1,7 +1,11 @@
 local pkg = ...
 local unpack = table.unpack or unpack
 -- save a test file and then load it
-local debugfile = MergeFullPath(wx.wxStandardPaths.Get():GetTempDir(), "debug.lua")
+local tempFile = wx.wxFile()
+local tempPath = wx.wxFileName.CreateTempFileName("zbs-debug", tempFile)
+tempFile:Close()
+FileRemove(tempPath)
+local debugfile = tempPath..".lua"
 FileWrite(debugfile, table.concat({
   "#!/usr/bin/env lua",
   "-- Debugger entry",
@@ -82,6 +86,10 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     if debugMenu then
       is(debugMenu:FindItem(ID.STARTDEBUG):GetItemLabelText(), wx.wxMenuItem.GetLabelText(TR("Co&ntinue")),
         "Debug menu shows Continue when the debugger is attached.")
+      if ID.DEBUGWATCHWINDOW and ID.DEBUGCALLSTACK then
+        ok(isEnabled(ID.DEBUGWATCHWINDOW) and isEnabled(ID.DEBUGCALLSTACK),
+          "Debug menu can open Watch Window and Call Stack when the debugger is attached.")
+      end
     end
     debugger:EvalAsync("a == nil", function(val)
         is(val, "true", "Step Into stops before executing the first statement.")
