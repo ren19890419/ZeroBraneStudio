@@ -647,7 +647,7 @@ function debugger:Listen(start)
       if runTo then launch.runTo = nil end
       local stopOnEntry = launch and launch.stopOnEntry
       local runstart = runTo and true or options.runstart
-      if stopOnEntry then runstart = false
+      if stopOnEntry ~= nil then runstart = not stopOnEntry
       elseif runstart == nil then runstart = ide.config.debugger.runonstart end
 
       -- support allowediting as set in the interpreter or config
