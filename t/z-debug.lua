@@ -51,6 +51,12 @@ local function localIsRed(locals, row, column)
   local colour = locals:GetCellTextColour(row, column or 1)
   return colour:Red() > colour:Green() and colour:Red() > colour:Blue()
 end
+local function findLocalRow(locals, name)
+  for row = 0, locals:GetNumberRows() - 1 do
+    local label = locals:GetCellValue(row, 0):gsub("^%s*", ""):gsub("^▾ ", ""):gsub("^▸ ", "")
+    if label == name then return row end
+  end
+end
 dispatch(ID.STEP)
 local firstpid = ide:GetLaunchedProcess()
 ok(firstpid ~= nil, "Step Into launches a debug process.")
@@ -160,6 +166,12 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
         end
       end
       ide.GetTextFromUser = prompt
+      local data = findLocalRow(locals, "data")
+      if data then locals:ToggleLocal(data) end
+      local item = findLocalRow(locals, "item")
+      if item then locals:ToggleLocal(item) end
+      local count = findLocalRow(locals, "count")
+      ok(count ~= nil and locals:GetCellValue(count, 1) == "10", "The nested table is expanded before stepping.")
     end
   elseif command == 3 and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)
@@ -167,28 +179,44 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     local locals = ide:GetLocals()
     ok(locals:GetCellValue(0, 1) == "5" and localIsRed(locals, 0),
       "Step Over highlights a changed local value in red.")
-    ok(not localIsRed(locals, 0, 0) and not localIsRed(locals, 0, 2) and not localIsRed(locals, 2),
+    local stable = findLocalRow(locals, "stable")
+    ok(stable ~= nil and not localIsRed(locals, 0, 0) and not localIsRed(locals, 0, 2)
+      and not localIsRed(locals, stable),
       "Only the Value cell of each changed local is highlighted.")
     ok(localIsRed(locals, 1), "Changes to a nested field highlight its parent table.")
-    locals:ToggleLocal(1)
-    locals:ToggleLocal(3)
-    ok(locals:GetCellValue(4, 1) == "11" and localIsRed(locals, 4) and not localIsRed(locals, 2),
-      "Expanding a table at the same pause retains the changed-field highlight.")
+    local count = findLocalRow(locals, "count")
+    ok(count ~= nil and locals:GetCellValue(count, 1) == "11" and localIsRed(locals, count),
+      "Step Over keeps nested tables expanded and shows the changed field in red.")
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()
     ok(localIsRed(locals, 0), "Refreshing Locals at the same pause keeps its highlight.")
+    count = findLocalRow(locals, "count")
+    ok(count ~= nil and localIsRed(locals, count), "Refreshing Locals keeps expanded fields visible.")
   elseif command == 4 and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()
     local locals = ide:GetLocals()
     ok(locals:GetCellValue(0, 1) == "5" and not localIsRed(locals, 0) and not localIsRed(locals, 1),
       "At the next pause unchanged values return to their normal colour.")
+    local count = findLocalRow(locals, "count")
+    ok(count ~= nil and locals:GetCellValue(count, 1) == "11" and not localIsRed(locals, count),
+      "An unchanged field stays visible in its expanded table at the next pause.")
+    local item = findLocalRow(locals, "item")
+    if item then locals:ToggleLocal(item) end
+  elseif command == 5 and ID.DEBUGLOCALS then
+    dispatch(ID.DEBUGLOCALS)
+    debugger:Wait()
+    local locals = ide:GetLocals()
+    local item = findLocalRow(locals, "item")
+    ok(item ~= nil and not findLocalRow(locals, "count"), "A manually collapsed table stays closed after stepping.")
+    if item then locals:ToggleLocal(item) end
   elseif command == 6 and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()
     local locals = ide:GetLocals()
     ok(locals:GetCellValue(0, 1) == "6" and not localIsRed(locals, 0),
       "Restarting debugging clears local change history.")
+    ok(not findLocalRow(locals, "item"), "A fresh debugging session starts with its tables collapsed.")
   end
   command = command + 1
   if cmd == "Restart" then

@@ -252,6 +252,23 @@ local function expandLocal(row)
   row.expanded = true
 end
 
+local function restoreLocalExpansion(rows, previousRows)
+  if not previousRows then return end
+  local byKey = {}
+  for _, previous in ipairs(previousRows) do
+    if previous.children then byKey[previous.key] = previous end
+  end
+  for _, row in ipairs(rows) do
+    local previous = byKey[row.key]
+    -- A table may be empty for one pause and gain children at the next.
+    if previous and type(row.value) == "table" then
+      expandLocal(row)
+      row.expanded = previous.expanded
+      restoreLocalExpansion(row.children, previous.children)
+    end
+  end
+end
+
 local function restoreLocalSelection(ctrl, request, expanded)
   local path = {request.name, unpack(request.path)}
   local rows, selected = localRows
@@ -277,7 +294,7 @@ local function restoreLocalSelection(ctrl, request, expanded)
   end
 end
 
-local function previousLocalsFrame(stack, previous, selected)
+local function matchLocalsFrame(stack, previous, selected)
   if not stack or not previous then return end
   -- Match callers from the bottom, so entering a function doesn't shift the baseline.
   local oldIndex = #previous
@@ -293,6 +310,17 @@ local function previousLocalsFrame(stack, previous, selected)
   end
 end
 
+local function carryLocalExpansion(stack, previous)
+  local rowsByFrame = {}
+  if previous and next(previous.rowsByFrame) then
+    for index, frame in ipairs(stack) do
+      local matched = matchLocalsFrame(stack, previous.stack, index)
+      rowsByFrame[frame] = previous.rowsByFrame[matched]
+    end
+  end
+  return {stack = stack, rowsByFrame = rowsByFrame}
+end
+
 function debugger:renderLocals(message)
   local ctrl = self.localsCtrl
   if not ctrl then return end
@@ -300,10 +328,15 @@ function debugger:renderLocals(message)
   local selected = self.localsFrame or 1
   local frame = self.localsStack and self.localsStack[selected]
   local values = type(frame) == "table" and frame[2]
-  local previous = previousLocalsFrame(self.localsStack, self.previousLocalsStack, selected)
+  local previous = matchLocalsFrame(self.localsStack, self.previousLocalsStack, selected)
   local previousValues = previous and type(previous[2]) == "table" and previous[2] or nil
   localRows = type(values) == "table"
     and makeLocalRows(values, nil, self:GetDataOptions({maxlevel=1}), previousValues) or {}
+  if type(values) == "table" and self.localsExpansion then
+    local rowsByFrame = self.localsExpansion.rowsByFrame
+    restoreLocalExpansion(localRows, rowsByFrame[frame])
+    rowsByFrame[frame] = localRows
+  end
   if #localRows == 0 then
     localRows[1] = {label = message or (self.localsStack and TR("No local variables.")
       or TR("Pause execution to inspect local variables."))}
@@ -313,6 +346,7 @@ end
 
 function debugger:resetLocals(rememberPause)
   self.previousLocalsStack = rememberPause and self.localsStack or nil
+  if not rememberPause then self.localsExpansion = nil end
   self.localsFrame = nil
   if not self.localsStack then return end
   self.localsStack = nil
@@ -334,6 +368,7 @@ function debugger:updateStackSync()
 
   local stack, _, err = debugger:stack(debugger:GetDataOptions({maxlength=false, localtypes=localsShown}))
   if not debugger.server or debugger ~= ide:GetDebugger() then return end
+  if stack then debugger.localsExpansion = carryLocalExpansion(stack, debugger.localsExpansion) end
   debugger.localsStack = stack or {}
   debugger:renderLocals(err and TR("Could not read local variables."))
   if shown then
