@@ -107,19 +107,49 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     ok(item:IsOk() and locals:GetItemText(item) == "a = 3",
       "Locals shows the paused frame's variable value.")
     if item:IsOk() then
-      local prompt, report = ide.GetTextFromUser, ide.ReportError
-      local editError
-      ide.GetTextFromUser = function() return "a + 4" end
-      ide.ReportError = function(_, message) editError = message end
-      locals:SelectItem(item)
-      local event = wx.wxTreeEvent(wx.wxEVT_COMMAND_TREE_ITEM_ACTIVATED, locals:GetId())
-      event:SetEventObject(locals)
-      locals:ProcessEvent(event)
-      debugger:Wait()
-      ide.GetTextFromUser, ide.ReportError = prompt, report
-      local updated = locals:GetFirstChild(locals:GetRootItem())
-      ok(not editError and updated:IsOk() and locals:GetItemText(updated) == "a = 7",
-        "Activating a local commits its new value to the paused frame.", editError)
+      local prompt = ide.GetTextFromUser
+      local prompted = false
+      ide.GetTextFromUser = function() prompted = true end
+      local function editValue()
+        locals:SelectItem(item)
+        local event = wx.wxTreeEvent(wx.wxEVT_COMMAND_TREE_ITEM_ACTIVATED, locals:GetId())
+        event:SetEventObject(locals)
+        locals:ProcessEvent(event)
+        local input = locals:FindFocus()
+        if input and input:GetParent() and input:GetParent():GetId() == locals:GetId()
+        and input:GetClassInfo():GetClassName() == "wxTextCtrl" then
+          return input:DynamicCast("wxTextCtrl")
+        end
+      end
+      local input = editValue()
+      ok(not prompted and input ~= nil and input:GetValue() == "3", "Activating a local opens its value inline.")
+      if input then
+        local rect = wx.wxRect()
+        local labelWidth = locals:GetTextExtent("a = ")
+        ok(locals:GetBoundingRect(item, rect, true)
+          and input:GetPosition():GetX() == rect:GetX() + labelWidth
+          and input:GetPosition():GetY() == rect:GetY(), "The editor starts at the local value.")
+        input:SetValue("100")
+        input:ProcessEvent(wx.wxFocusEvent(wx.wxEVT_KILL_FOCUS))
+        ok(not input:IsShown() and locals:GetItemText(item) == "a = 3", "Leaving the inline editor discards its draft.")
+        input = editValue()
+        ok(input ~= nil, "The local value can be edited again.")
+        if input then
+          local function enter()
+            input:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_TEXT_ENTER, input:GetId()))
+            debugger:Wait()
+          end
+          input:SetValue("a +")
+          enter()
+          ok(input:IsShown() and input:IsEditable() and input:GetValue() == "a +",
+            "An invalid expression stays in the inline editor for correction.")
+          input:SetValue("a + 4")
+          enter()
+          local updated = locals:GetFirstChild(locals:GetRootItem())
+          ok(updated:IsOk() and locals:GetItemText(updated) == "a = 7", "Enter commits the local edit.")
+        end
+      end
+      ide.GetTextFromUser = prompt
     end
   end
   command = command + 1

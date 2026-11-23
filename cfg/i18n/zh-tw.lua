@@ -5,8 +5,6 @@ return {
   ["Pause execution to inspect local variables."] = "暫停執行後即可檢視區域變數。", -- src\editor\debugger.lua
   ["No local variables."] = "目前的呼叫框架沒有區域變數。", -- src\editor\debugger.lua
   ["Could not read local variables."] = "無法讀取區域變數。", -- src\editor\debugger.lua
-  ["Edit Value"] = "修改變數值", -- src\editor\debugger.lua
-  ["Enter a Lua expression for the new value of '%s'."] = "輸入 Lua 運算式以設定「%s」的新值。", -- src\editor\debugger.lua
   ["Could not change the local variable: %s"] = "無法修改區域變數：%s", -- src\editor\debugger.lua
   ["The debug client does not support editing local variables."] = "目前的除錯客戶端不支援修改區域變數。", -- lualibs\mobdebug\mobdebug.lua
   ["%s event failed: %s"] = "%s 事件失敗: %s", -- src\editor\package.lua

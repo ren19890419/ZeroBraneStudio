@@ -123,6 +123,20 @@ end
 
 local callData = {}
 local localItems = {}
+local localsEditor
+
+local function closeLocalsEditor(restoreFocus)
+  local input = localsEditor
+  if not input then return end
+  localsEditor = nil
+  local ctrl = input:GetParent()
+  input:Hide()
+  -- A key or focus handler can still be using the control.
+  ide:DoWhenIdle(function()
+    if ide:IsValidCtrl(input) then input:Destroy() end
+  end)
+  if restoreFocus then ctrl:SetFocus() end
+end
 
 local function appendLocalValue(ctrl, parent, name, value, params)
   local key = tostring(name)
@@ -172,6 +186,7 @@ function debugger:renderLocals(message)
   local ctrl = self.localsCtrl
   if not ctrl then return end
 
+  closeLocalsEditor()
   ctrl:Freeze()
   ctrl:DeleteAllItems()
   localItems = {}
@@ -1830,26 +1845,79 @@ do
     if not row or not row.name or not snapshot or not debugger.server or debugger.running
     or (debugger.options or {}).noeval then event:Skip() return end
 
+    closeLocalsEditor()
+    ctrl:EnsureVisible(item)
+    local rect = wx.wxRect()
+    if not ctrl:GetBoundingRect(item, rect, true) then return end
+    local clientWidth = ctrl:GetClientSize():GetWidth()
+    if clientWidth <= 0 then return end
+    local labelWidth = ctrl:GetTextExtent(fixUTF8(row.label .. " = "))
+    local minWidth = ctrl:GetTextExtent("00000000")
+    local x = math.max(0, math.min(rect:GetX() + labelWidth, clientWidth - minWidth))
+
     local expanded = ctrl:IsExpanded(item)
     local original = fixUTF8(serialize(row.value, debugger:GetDataOptions({maxlevel=false, maxlength=false})))
-    local value = ide:GetTextFromUser(TR("Enter a Lua expression for the new value of '%s'."):format(row.label),
-      TR("Edit Value"), original)
-    -- The modal dialog may have outlived the pause or the selected frame.
-    if not value or value == original or debugger ~= ide:GetDebugger() or not debugger.server
-    or debugger.running or debugger.localsStack ~= snapshot or (debugger.localsFrame or 1) ~= frame then return end
+    local input = wx.wxTextCtrl(ctrl, wx.wxID_ANY, original, wx.wxPoint(x, rect:GetY()),
+      wx.wxSize(clientWidth - x, rect:GetHeight()), wx.wxTE_PROCESS_ENTER + wx.wxBORDER_SIMPLE)
+    input:SetFont(ctrl:GetFont())
+    input:SetForegroundColour(ctrl:GetForegroundColour())
+    input:SetBackgroundColour(ctrl:GetBackgroundColour())
+    input:SetName(fixUTF8(row.label))
+    localsEditor = input
+    local committing
 
-    local request = {frame = frame, name = row.name, path = row.path, expression = value}
-    copas.addthread(function()
-      local _, _, err = debugger:handle("setlocal " .. mobdebug.line(request, {comment=false}))
-      if debugger ~= ide:GetDebugger() or not debugger.server then return end
-      if err then ide:ReportError(TR("Could not change the local variable: %s"):format(fixUTF8(TR(err)))) end
-      debugger:updateStackSync()
-      if debugger == ide:GetDebugger() and debugger.localsStack and (debugger.localsFrame or 1) == frame then
-        restoreLocalSelection(ctrl, request, expanded)
-      end
-      debugger:updateWatchesSync()
+    input:Connect(wx.wxEVT_KEY_DOWN, function(key)
+      if key:GetKeyCode() == wx.WXK_ESCAPE then
+        if localsEditor == input and not committing then closeLocalsEditor(true) end
+      else key:Skip() end
     end)
+    input:Connect(wx.wxEVT_KILL_FOCUS, function(focus)
+      if localsEditor == input then closeLocalsEditor() end
+      focus:Skip()
+    end)
+    input:Connect(wx.wxEVT_COMMAND_TEXT_ENTER, function()
+      if localsEditor ~= input or committing then return end
+      local value = input:GetValue()
+      if value == original or debugger ~= ide:GetDebugger() or not debugger.server or debugger.running
+      or debugger.localsStack ~= snapshot or (debugger.localsFrame or 1) ~= frame then
+        closeLocalsEditor(true)
+        return
+      end
+
+      committing = true
+      input:SetEditable(false)
+      local request = {frame = frame, name = row.name, path = row.path, expression = value}
+      copas.addthread(function()
+        local _, _, err = debugger:handle("setlocal " .. mobdebug.line(request, {comment=false}))
+        if debugger ~= ide:GetDebugger() or not debugger.server then return end
+        if err then
+          local message = TR("Could not change the local variable: %s"):format(fixUTF8(TR(err)))
+          ide:SetStatusFor(message, 5)
+          if localsEditor == input then
+            committing = false
+            input:SetEditable(true)
+            input:SetToolTip(message)
+            input:SelectAll()
+          end
+          return
+        end
+        if localsEditor == input then closeLocalsEditor(true) end
+        debugger:updateStackSync()
+        if debugger == ide:GetDebugger() and debugger.localsStack and (debugger.localsFrame or 1) == frame then
+          restoreLocalSelection(ctrl, request, expanded)
+        end
+        debugger:updateWatchesSync()
+      end)
+    end)
+    input:SetFocus()
+    input:SelectAll()
   end)
+  local function cancelOnLayoutChange(event)
+    closeLocalsEditor()
+    event:Skip()
+  end
+  ctrl:Connect(wx.wxEVT_SIZE, cancelOnLayoutChange)
+  ctrl:Connect(wx.wxEVT_MOUSEWHEEL, cancelOnLayoutChange)
   ctrl:Connect(wx.wxEVT_SET_FOCUS, function(event)
     local debugger = ide:GetDebugger()
     if not debugger.localsStack then debugger:updateStack() end
