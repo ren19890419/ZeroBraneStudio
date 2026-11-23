@@ -3,31 +3,40 @@
 local pathcache
 local win = ide.osname == "Windows"
 
+local function getExecutable()
+  if ide.config.path.busted then return ide.config.path.busted end
+  if pathcache and wx.wxFileExists(pathcache) then return pathcache end
+  local sep = win and ";" or ":"
+  local default = win and GenerateProgramFilesPath('LuaRocks\\systree\\bin', sep)..sep or ""
+  local paths = default..(os.getenv("PATH") or "")..sep..(os.getenv("HOME") and os.getenv("HOME").."/bin" or "")
+  local names = win and {"busted.bat", "busted.cmd", "busted.exe"} or {"busted"}
+  for path in paths:gmatch("[^"..sep.."]+") do
+    for _, name in ipairs(names) do
+      local match = GetFullPathIfExists(path, name)
+      if match then pathcache = match; return match end
+    end
+  end
+  return nil, paths
+end
+
+local function getRunOptions(self, default)
+  local options = ide.config.busted and ide.config.busted.options or default or ""
+  local params = self:GetCommandLineArg()
+  if params and params ~= "" then options = options.." "..params end
+  return options
+end
+
 return {
   name = "Busted",
   description = "Busted Lua testing",
   api = {"baselib"},
+  GetExecutable = getExecutable,
+  GetRunOptions = getRunOptions,
   frun = function(self,wfilename,rundebug)
-    local busted = ide.config.path.busted or pathcache -- check if the path is configured
+    local busted, paths = getExecutable()
     if not busted then
-      local sep = win and ';' or ':'
-      local default =
-           win and GenerateProgramFilesPath('LuaRocks\\systree\\bin', sep)..sep
-        or ''
-      local path = default
-                 ..(os.getenv('PATH') or '')..sep
-                 ..(os.getenv('HOME') and os.getenv('HOME') .. '/bin' or '')
-      local paths = {}
-      for p in path:gmatch("[^"..sep.."]+") do
-        busted = busted or GetFullPathIfExists(p, win and 'busted.bat' or 'busted')
-        table.insert(paths, p)
-      end
-      if not busted then
-        ide:Print("Can't find busted executable in any of the folders in PATH: "
-          ..table.concat(paths, ", "))
-        return
-      end
-      pathcache = busted
+      ide:Print("Can't find busted executable in any of the folders in PATH: "..paths:gsub(win and ";" or ":", ", "))
+      return
     end
 
     local file = wfilename:GetFullPath()
@@ -47,9 +56,7 @@ return {
       f:close()
     end
 
-    local options = ide.config.busted and ide.config.busted.options or "--output=TAP"
-    local params = self:GetCommandLineArg()
-    if params and params ~= "" then options = options .. " " .. params end
+    local options = getRunOptions(self, "--output=TAP")
     local cmd = ('"%s" %s %s "%s"'):format(busted, helper and "--helper="..helper or "", options, file)
      -- CommandLineRun(cmd,wdir,tooutput,nohide,stringcallback,uid,endcallback)
     return CommandLineRun(cmd,self:fworkdir(wfilename),true,false,nil,nil,
