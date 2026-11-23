@@ -236,6 +236,7 @@ end
 
 function CommandLineRun(cmd,wdir,tooutput,nohide,stringcallback,uid,endcallback)
   if (not cmd) then return end
+  wdir = (ide.runProfile and ide.runProfile.cwd) or wdir
 
   -- expand ~ at the beginning of the command
   if ide.oshome and cmd:find('~') then

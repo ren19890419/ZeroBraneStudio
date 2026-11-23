@@ -72,12 +72,7 @@ local function create_checker()
           str = str .. "(" .. report.code .. ")"
         end
 
-        table.insert(warnings, ("%s:%d:%d: %s"):format(
-            file,
-            report.line,
-            report.column, -- not standard when using luainspect
-            str
-          ))
+        warnings[#warnings+1] = {file = file, line = report.line, column = report.column, message = str}
       end
 
       return warnings
@@ -109,7 +104,8 @@ local function create_checker()
     local function show_warnings(top_ast, globinit)
       local warnings = {}
       local function warn(msg, linenum, path)
-        warnings[#warnings+1] = (path or current_file or "?") .. ":" .. (linenum or pos2line(current_ast.pos) or 0) .. ": " .. msg
+        warnings[#warnings+1] = {file = path or current_file or "?",
+          line = tonumber(linenum) or pos2line(current_ast.pos) or 0, message = msg}
       end
       local function known(o) return not T.istype[o] end
       local function index(f) -- build abc.def.xyz name recursively
@@ -277,13 +273,34 @@ local function create_checker()
 end
 
 local checkers = {}
-local function warnings_from_string(...)
+local function diagnostics_from_string(...)
   local checktype = (ide.config.staticanalyzer.luacheck
     -- luacheck globals depend on the interpreter, so create different checkers if needed
     and "luacheck" .. (ide:GetInterpreter():GetFileName() or "") .. (ide:GetProject() or "")
     or "luainspect")
   if not checkers[checktype] then checkers[checktype] = create_checker() end
   return checkers[checktype](...)
+end
+
+local function warnings_from_string(...)
+  local warnings, err, line, column = diagnostics_from_string(...)
+  if not warnings then return nil, err, line, column end
+  for index, warning in ipairs(warnings) do
+    local position = warning.column and ("%d:%d"):format(warning.line, warning.column) or warning.line
+    warnings[index] = ("%s:%s: %s"):format(warning.file, position, warning.message)
+  end
+  return warnings
+end
+
+function ide:AnalyzeDiagnostics(source, file)
+  file = file or "<string>"
+  local warnings, err, line, column = diagnostics_from_string(source, file)
+  if not warnings then
+    return {{file = file, line = tonumber(line) or 0, column = tonumber(column),
+      message = err, severity = "error"}}
+  end
+  for _, warning in ipairs(warnings) do warning.severity = "warning" end
+  return warnings
 end
 
 function AnalyzeFile(file)
@@ -330,8 +347,11 @@ end
 
 frame:Connect(ID.ANALYZE, wx.wxEVT_COMMAND_MENU_SELECTED,
   function ()
-    ide:GetOutput():Activate()
     local editor = ide:GetEditor()
+    if editor and editor.spec.apitype == "lua" then
+      return ide:GetPackage("core.problems"):AnalyzeEditor(editor, true)
+    end
+    ide:GetOutput():Activate()
     if not analyzeProgram(editor) then
       CompileProgram(editor, { reportstats = false, keepoutput = true })
     end

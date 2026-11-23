@@ -948,6 +948,7 @@ end
 function debugger:Listen(start)
   local debugger = ide:GetDebugger()
   if start == false then
+    debugger.attachProfile = nil
     if debugger.listening then
       debugger:terminate() -- terminate if running
       copas.removeserver(debugger.listening)
@@ -997,6 +998,8 @@ function debugger:Listen(start)
       -- debugger.options may not be set, but runonstart is still configured.
       local launch = debugger.launch
       if launch and launch.pid ~= ide:GetLaunchedProcess() then launch = nil end
+      local attachProfile = not launch and debugger.attachProfile
+      if attachProfile and attachProfile.project ~= ide:GetProject() then attachProfile = nil end
       local runTo = launch and launch.runTo
       if runTo then launch.runTo = nil end
       local stopOnEntry = launch and launch.stopOnEntry
@@ -1027,6 +1030,7 @@ function debugger:Listen(start)
 
       local editor = ide:GetEditor()
       local startfile = launch and launch.filename
+        or attachProfile and attachProfile.entry
         or ide:GetProjectStartFile() or options.startwith
         or (editor and SaveIfModified(editor) and ide:GetDocument(editor):GetFilePath())
 
@@ -1036,7 +1040,7 @@ function debugger:Listen(start)
       end
 
       local startpath = wx.wxFileName(startfile):GetPath(wx.wxPATH_GET_VOLUME + wx.wxPATH_GET_SEPARATOR)
-      local basedir = options.basedir or ide:GetProject() or startpath
+      local basedir = attachProfile and attachProfile.cwd or options.basedir or ide:GetProject() or startpath
       -- guarantee that the path has a trailing separator
       debugger.basedir = wx.wxFileName.DirName(basedir):GetFullPath()
 
@@ -1079,22 +1083,23 @@ function debugger:Listen(start)
             end})
       end
 
-      if (options.startwith) then
-        local file, line, err = debugger:loadfile(options.startwith)
+      local startwith = options.startwith and (attachProfile and attachProfile.entry or options.startwith)
+      if startwith then
+        local file, line, err = debugger:loadfile(startwith)
         if err then
           displayError(TR("Can't run the entry point script ('%s').")
-            :format(options.startwith)
+            :format(startwith)
             .." "..TR("Compilation error")
             ..":\n"..err)
           return debugger:terminate()
         elseif runstart and not debugger.scratchpad then
-          if runTo then file, line = file or options.startwith, line or 0 end
+          if runTo then file, line = file or startwith, line or 0 end
           if debugger:stoppedAtBreakpoint(file, line, runTo) then
             debugger:ActivateDocument(file, line)
             runstart = false
           end
         elseif stopOnEntry or file and line then
-          file, line = file or options.startwith, line or 0
+          file, line = file or startwith, line or 0
           if not debugger:ActivateDocument(file, line) then
             displayError(TR("Debugging suspended at '%s:%s' (couldn't activate the file).")
               :format(file, line))

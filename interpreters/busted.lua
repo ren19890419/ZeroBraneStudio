@@ -48,10 +48,13 @@ return {
     end
 
     local options = ide.config.busted and ide.config.busted.options or "--output=TAP"
+    local params = self:GetCommandLineArg()
+    if params and params ~= "" then options = options .. " " .. params end
     local cmd = ('"%s" %s %s "%s"'):format(busted, helper and "--helper="..helper or "", options, file)
      -- CommandLineRun(cmd,wdir,tooutput,nohide,stringcallback,uid,endcallback)
     return CommandLineRun(cmd,self:fworkdir(wfilename),true,false,nil,nil,
       function() if helper then wx.wxRemoveFile(helper) end end)
   end,
   hasdebugger = true,
+  takeparameters = true,
 }

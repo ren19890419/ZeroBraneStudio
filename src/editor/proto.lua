@@ -133,6 +133,7 @@ ide.proto.Interpreter = {__index = {
   GetExePath = function(self, ...) return self:fexepath(...) end,
   GetAPI = function(self) return self.api end,
   GetCommandLineArg = function(self, name)
+    if ide.runProfile then return ide.runProfile.args end
     return ide.config.arg and (ide.config.arg.any or ide.config.arg[name or self.fname])
   end,
   UpdateStatus = function(self)
@@ -143,6 +144,7 @@ ide.proto.Interpreter = {__index = {
     return wfilename:GetPath(wx.wxPATH_GET_VOLUME)
   end,
   fworkdir = function(self,wfilename)
+    if ide.runProfile and ide.runProfile.cwd then return ide.runProfile.cwd end
     local proj = ide:GetProject()
     return proj and proj:gsub("[\\/]$","") or wfilename:GetPath(wx.wxPATH_GET_VOLUME)
   end,

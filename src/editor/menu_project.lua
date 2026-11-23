@@ -205,23 +205,48 @@ local function getNameToRun(editor, skipcheck, filename)
   return wx.wxFileName(name or doc:GetFilePath())
 end
 
-local function runInterpreter(wfilename, withdebugger)
+local function activeLaunchProfile()
+  local saved = ide:GetRunProfile()
+  if not saved then return nil, true end
+  local profile, err = ide:ResolveRunProfile(ide:GetProject(), saved)
+  if not profile then
+    ide:ReportError(err)
+    return nil, false
+  end
+  if profile.interpreter ~= ide:GetInterpreter():GetFileName() then ProjectSetInterpreter(profile.interpreter) end
+  return profile, true
+end
+
+local function profileFile(profile, skipcheck)
+  if not profile then return getNameToRun(ide:GetEditor(), skipcheck) end
+  local doc = ide:FindDocument(profile.entry)
+  return getNameToRun(doc and doc:GetEditor(), skipcheck, profile.entry)
+end
+
+local function runInterpreter(wfilename, withdebugger, profile)
   ClearOutput()
   ide:GetOutput():Activate()
 
   ClearAllCurrentLineMarkers()
   if not wfilename or not ide.interpreter.frun then return end
   ide:GetDebugger().launch = nil
-  local pid = ide.interpreter:frun(wfilename, withdebugger)
+  ide:GetDebugger().attachProfile = nil
+  local previous = ide.runProfile
+  ide.runProfile = profile
+  local ok, pid = pcall(ide.interpreter.frun, ide.interpreter, wfilename, withdebugger)
+  ide.runProfile = previous
+  if not ok then error(pid, 0) end
   if pid then OutputEnableInput() end
   ide:SetLaunchedProcess(pid)
   return pid
 end
 
 function ProjectRun(skipcheck)
-  local fname = getNameToRun(ide:GetEditor(), skipcheck)
+  local profile, ready = activeLaunchProfile()
+  if not ready or profile and profile.mode == "attach" then return end
+  local fname = profileFile(profile, skipcheck)
   if not fname then return end
-  return runInterpreter(fname)
+  return runInterpreter(fname, nil, profile)
 end
 
 local debuggers = {
@@ -233,22 +258,22 @@ local function sameLaunchContext(launch)
   return ide.interpreter == launch.interpreter and ide:GetProject() == launch.project
 end
 
-local function startDebugging(fname, debtype, stopOnEntry, runTo)
+local function startDebugging(fname, debtype, stopOnEntry, runTo, profile)
   local debugger = ide:GetDebugger()
   if not debugger:IsListening() then debugger:Listen() end
   local debcall = debuggers[debtype or "debug"]:format(debugger:GetHostName(), debugger:GetPortNumber())
   local filename, interpreter, project = fname:GetFullPath(), ide.interpreter, ide:GetProject()
   if stopOnEntry then LoadFile(filename, nil, true, true) end
-  local pid = runInterpreter(fname, debcall)
+  local pid = runInterpreter(fname, debcall, profile)
   if pid and debtype ~= "scratchpad" then
     local launch = { pid = pid, filename = filename, interpreter = interpreter, project = project,
-      stopOnEntry = stopOnEntry, runTo = runTo }
+      stopOnEntry = stopOnEntry, runTo = runTo, profile = profile }
     ide:GetDebugger().launch = launch
     launch.tracked = ide:GetOutput():AfterProcessExit(pid, function()
       local debugger = ide:GetDebugger()
       if launch.restart and debugger.launch == launch and not ide:IsExiting()
       and sameLaunchContext(launch) and not ide:GetLaunchedProcess() and not debugger:IsConnected() then
-        startDebugging(wx.wxFileName(launch.filename))
+        startDebugging(wx.wxFileName(launch.filename), nil, nil, nil, launch.profile)
       end
     end)
   end
@@ -266,11 +291,25 @@ function ProjectDebug(skipcheck, debtype, stopOnEntry)
       debugger:Run()
     end
   else
+    local profile, ready = activeLaunchProfile()
+    if not ready then return end
+    if profile and profile.mode == "attach" then
+      if not LoadFile(profile.entry, nil, true, true) then return end
+      debugger.attachProfile = profile
+      ide:GetOutput():Activate()
+      ide.interpreter:fattachdebug()
+      debugger:Listen()
+      if not debugger:IsListening() then debugger.attachProfile = nil
+      else ide:Print(TR("Waiting for a remote Lua debugger connection.")) end
+      return
+    end
     local editor = ide:GetEditor()
     local filename = not editor and stopOnEntry and ide:GetProjectStartFile() or nil
-    local fname = getNameToRun(editor, skipcheck, filename)
+    local fname
+    if profile then fname = profileFile(profile, skipcheck)
+    else fname = getNameToRun(editor, skipcheck, filename) end
     if not fname then return end
-    return startDebugging(fname, debtype, stopOnEntry)
+    return startDebugging(fname, debtype, stopOnEntry, nil, profile)
   end
   return true
 end
@@ -346,10 +385,12 @@ frame:Connect(ID_COMPILE, wx.wxEVT_UPDATE_UI,
 frame:Connect(ID_RUN, wx.wxEVT_COMMAND_MENU_SELECTED, function () ProjectRun() end)
 frame:Connect(ID_RUN, wx.wxEVT_UPDATE_UI,
   function (event)
+    local profile = ide:GetRunProfile()
+    local interpreter = profile and ide:GetInterpreter(profile.interpreter) or ide.interpreter
     event:Enable(ide:GetDebugger():IsConnected() == nil and
                  ide:GetLaunchedProcess() == nil and
-                 (ide.interpreter.frun ~= nil) and -- nil == no running from this interpreter
-                 ide:GetEditor() ~= nil)
+                 interpreter and interpreter.frun ~= nil and
+                 (profile and profile.mode ~= "attach" or not profile and ide:GetEditor() ~= nil) and true or false)
   end)
 
 frame:Connect(ID_RUNNOW, wx.wxEVT_COMMAND_MENU_SELECTED,
@@ -383,6 +424,7 @@ frame:Connect(ID_RUNNOW, wx.wxEVT_UPDATE_UI,
 
 frame:Connect(ID_ATTACHDEBUG, wx.wxEVT_COMMAND_MENU_SELECTED,
   function (event)
+    ide:GetDebugger().attachProfile = nil
     ide:GetDebugger():Listen(event:IsChecked()) -- start/stop listening
     if event:IsChecked() and ide.interpreter.fattachdebug then ide.interpreter:fattachdebug() end
   end)
@@ -397,10 +439,14 @@ frame:Connect(ID_STARTDEBUG, wx.wxEVT_UPDATE_UI,
   function (event)
     local editor = ide:GetEditor()
     local debugger = ide:GetDebugger()
-    event:Enable((ide.interpreter) and (ide.interpreter.hasdebugger) and
-                 (ide.interpreter.frun ~= nil) and -- nil == no running from this interpreter
-      ((debugger:IsConnected() == nil and ide:GetLaunchedProcess() == nil and editor ~= nil) or
-       (debugger:IsConnected() ~= nil and not debugger:IsRunning())) and
+    local profile = ide:GetRunProfile()
+    local interpreter = profile and ide:GetInterpreter(profile.interpreter) or ide.interpreter
+    local attach = profile and profile.mode == "attach"
+    local canLaunch = interpreter and (attach and interpreter.fattachdebug
+      or not attach and interpreter.hasdebugger and interpreter.frun)
+    event:Enable(((debugger:IsConnected() == nil and ide:GetLaunchedProcess() == nil
+       and canLaunch and (editor ~= nil or profile ~= nil)) or
+      (debugger:IsConnected() ~= nil and not debugger:IsRunning())) and
       (not debugger.scratchpad or debugger.scratchpad.paused))
     local isconnected = debugger:IsConnected() ~= nil
     local label, other = debugMenuRunLabel[isconnected], debugMenuRunLabel[not isconnected]
@@ -435,7 +481,9 @@ frame:Connect(ID_DETACHDEBUG, wx.wxEVT_UPDATE_UI,
   end)
 
 local function canStartDebugging()
-  local interpreter = ide.interpreter
+  local profile = ide:GetRunProfile()
+  if profile and profile.mode == "attach" then return false end
+  local interpreter = profile and ide:GetInterpreter(profile.interpreter) or ide.interpreter
   return interpreter ~= nil and interpreter.hasdebugger and interpreter.frun ~= nil
     and ide:GetLaunchedProcess() == nil
 end
@@ -455,10 +503,12 @@ frame:Connect(ID_RUNTO, wx.wxEVT_COMMAND_MENU_SELECTED,
     if debugger:IsConnected() then
       debugger:RunTo(editor, line)
     elseif not editor:IsLineEmpty(line - 1) then
-      local fname = getNameToRun(editor)
+      local profile, ready = activeLaunchProfile()
+      if not ready then return end
+      local fname = profileFile(profile)
       local document = fname and ide:GetDocument(editor)
       local filename = document and document:GetFilePath()
-      if filename then startDebugging(fname, nil, nil, { filename = filename, line = line }) end
+      if filename then startDebugging(fname, nil, nil, { filename = filename, line = line }, profile) end
     end
   end)
 frame:Connect(ID_RUNTO, wx.wxEVT_UPDATE_UI,
@@ -470,7 +520,7 @@ local function canStep(debugger)
   if debugger.scratchpad then return false end
   local editor = ide:GetEditor()
   if debugger:IsConnected() then return editor ~= nil and not debugger:IsRunning() end
-  return canStartDebugging() and (editor ~= nil or ide:GetProjectStartFile() ~= nil)
+  return canStartDebugging() and (editor ~= nil or ide:GetRunProfile() ~= nil or ide:GetProjectStartFile() ~= nil)
 end
 
 local function stepDebugging(event)
