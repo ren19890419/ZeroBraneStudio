@@ -438,7 +438,7 @@ frame:Connect(ID_RUNTO, wx.wxEVT_UPDATE_UI,
       and (ide:GetEditor() ~= nil) and (not debugger.scratchpad))
   end)
 
-local function canStepInto(debugger)
+local function canStep(debugger)
   if debugger.scratchpad then return false end
   local editor = ide:GetEditor()
   if debugger:IsConnected() then return editor ~= nil and not debugger:IsRunning() end
@@ -448,26 +448,24 @@ local function canStepInto(debugger)
     and (editor ~= nil or ide:GetProjectStartFile() ~= nil)
 end
 
-frame:Connect(ID_STEP, wx.wxEVT_COMMAND_MENU_SELECTED,
-  function ()
-    local debugger = ide:GetDebugger()
-    if not canStepInto(debugger) then return end
-    if debugger:IsConnected() then debugger:Step()
-    else ProjectDebug(nil, nil, true) end
-  end)
-frame:Connect(ID_STEP, wx.wxEVT_UPDATE_UI,
-  function (event)
-    event:Enable(canStepInto(ide:GetDebugger()) and true or false)
-  end)
+local function stepDebugging(event)
+  local debugger = ide:GetDebugger()
+  if not canStep(debugger) then return end
 
-frame:Connect(ID_STEPOVER, wx.wxEVT_COMMAND_MENU_SELECTED,
-  function () ide:GetDebugger():Over() end)
-frame:Connect(ID_STEPOVER, wx.wxEVT_UPDATE_UI,
-  function (event)
-    local debugger = ide:GetDebugger()
-    event:Enable((debugger:IsConnected() ~= nil) and (not debugger:IsRunning())
-      and (ide:GetEditor() ~= nil) and (not debugger.scratchpad))
-  end)
+  if not debugger:IsConnected() then
+    ProjectDebug(nil, nil, true)
+  elseif event:GetId() == ID_STEP then
+    debugger:Step()
+  else
+    debugger:Over()
+  end
+end
+
+for _, id in ipairs({ID_STEP, ID_STEPOVER}) do
+  frame:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, stepDebugging)
+  frame:Connect(id, wx.wxEVT_UPDATE_UI,
+    function (event) event:Enable(canStep(ide:GetDebugger()) and true or false) end)
+end
 
 frame:Connect(ID_STEPOUT, wx.wxEVT_COMMAND_MENU_SELECTED,
   function () ide:GetDebugger():Out() end)

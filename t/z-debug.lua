@@ -2,20 +2,35 @@ local pkg = ...
 local unpack = table.unpack or unpack
 -- save a test file and then load it
 local debugfile = MergeFullPath(wx.wxStandardPaths.Get():GetTempDir(), "debug.lua")
-FileWrite(debugfile, "#!/usr/bin/env lua\n-- Debugger entry\n\nlocal a = 1+2\na = 2+3\na = 3+4\na = 4+5\na = 5+6")
+FileWrite(debugfile, table.concat({
+  "#!/usr/bin/env lua",
+  "-- Debugger entry",
+  "",
+  "local a = 1+2",
+  "a = 2+3",
+  "local function add()",
+  "  a = a + 1",
+  "end",
+  "add()",
+  "a = 5+6",
+}, "\n"))
 pkg.onAppClose = function() FileRemove(debugfile) end
 ok(wx.wxFileExists(debugfile), "File created before starting debugging.")
 local editor = ide:ActivateFile(debugfile)
-local breakpointLine = 8
+local breakpointLine = 10
 editor:BreakpointToggle(breakpointLine - 1)
 
 ide:GetMenuBar():Check(ID.CLEAROUTPUTENABLE, false)
 local runonstart = ide.config.debugger.runonstart
 ide.config.debugger.runonstart = true
 local frame = ide:GetMainFrame()
-local enabled = wx.wxUpdateUIEvent(ID.STEP)
-frame:ProcessEvent(enabled)
-ok(enabled:GetEnabled(), "Step Into is enabled before debugging starts.")
+local function isEnabled(id)
+  local event = wx.wxUpdateUIEvent(id)
+  frame:ProcessEvent(event)
+  return event:GetEnabled()
+end
+ok(isEnabled(ID.STEP), "Step Into is enabled before debugging starts.")
+ok(isEnabled(ID.STEPOVER), "Step Over is enabled before debugging starts.")
 local function stepInto()
   frame:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.STEP))
 end
@@ -30,8 +45,8 @@ end
 
 local commands = {
   {debugfile, 4, "Step"},
-  {debugfile, 5, "RunTo", {editor, 7}},
-  {debugfile, 7, "Run"},
+  {debugfile, 5, "RunTo", {editor, 9}},
+  {debugfile, 9, "Over"},
   {debugfile, breakpointLine, "Restart"},
   {debugfile, breakpointLine, "Stop"},
 }
@@ -83,7 +98,13 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       ok(pid and pid ~= firstpid, "Restart starts a new process for the original entry file.")
       ok(not wx.wxProcess.Exists(firstpid), "The old debug process exits before the new session starts.")
     end
-    if cmd == "Step" then stepInto() else debugger[cmd](debugger, unpack(args or {})) end
+    if cmd == "Step" then
+      stepInto()
+    elseif cmd == "Over" then
+      frame:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.STEPOVER))
+    else
+      debugger[cmd](debugger, unpack(args or {}))
+    end
   end
 end
 pkg.onDebuggerClose = function()
