@@ -10,8 +10,8 @@ FileWrite(debugfile, table.concat({
   "#!/usr/bin/env lua",
   "-- Debugger entry",
   "",
-  "local a, data = 1+2, {handle = io.stdout}",
-  "a = 2+3",
+  "local a, data, stable = 1+2, {handle = io.stdout, item = {count = 10}}, 42",
+  "a = 2+3; data.item.count = 11",
   "local function add()",
   "  a = a + 1",
   "end",
@@ -47,6 +47,10 @@ local function runToCursor(line)
   editor:GotoLine(line - 1)
   dispatch(ID.RUNTO)
 end
+local function localIsRed(locals, row, column)
+  local colour = locals:GetCellTextColour(row, column or 1)
+  return colour:Red() > colour:Green() and colour:Red() > colour:Blue()
+end
 dispatch(ID.STEP)
 local firstpid = ide:GetLaunchedProcess()
 ok(firstpid ~= nil, "Step Into launches a debug process.")
@@ -58,7 +62,8 @@ end
 
 local commands = {
   {debugfile, 4, "Step"},
-  {debugfile, 5, "RunTo", {9}},
+  {debugfile, 5, "Over"},
+  {debugfile, 8, "RunTo", {9}},
   {debugfile, 9, "Over"},
   {debugfile, breakpointLine, "Restart"},
   {debugfile, breakpointLine, "StartRunTo"},
@@ -111,6 +116,7 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       is(locals:GetCellValue(0, 0), "a", "Locals shows the variable name.")
       is(locals:GetCellValue(0, 1), "3", "Locals shows the paused variable value.")
       is(locals:GetCellValue(0, 2), "number", "Locals shows the Lua type.")
+      ok(not localIsRed(locals, 0), "A newly visible local starts without a change highlight.")
       locals:ToggleLocal(1)
       is(locals:GetCellValue(2, 2), "userdata", "Expanded fields show their original Lua type.")
       locals:ToggleLocal(1)
@@ -155,6 +161,34 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       end
       ide.GetTextFromUser = prompt
     end
+  elseif command == 3 and ID.DEBUGLOCALS then
+    dispatch(ID.DEBUGLOCALS)
+    debugger:Wait()
+    local locals = ide:GetLocals()
+    ok(locals:GetCellValue(0, 1) == "5" and localIsRed(locals, 0),
+      "Step Over highlights a changed local value in red.")
+    ok(not localIsRed(locals, 0, 0) and not localIsRed(locals, 0, 2) and not localIsRed(locals, 2),
+      "Only the Value cell of each changed local is highlighted.")
+    ok(localIsRed(locals, 1), "Changes to a nested field highlight its parent table.")
+    locals:ToggleLocal(1)
+    locals:ToggleLocal(3)
+    ok(locals:GetCellValue(4, 1) == "11" and localIsRed(locals, 4) and not localIsRed(locals, 2),
+      "Expanding a table at the same pause retains the changed-field highlight.")
+    dispatch(ID.DEBUGLOCALS)
+    debugger:Wait()
+    ok(localIsRed(locals, 0), "Refreshing Locals at the same pause keeps its highlight.")
+  elseif command == 4 and ID.DEBUGLOCALS then
+    dispatch(ID.DEBUGLOCALS)
+    debugger:Wait()
+    local locals = ide:GetLocals()
+    ok(locals:GetCellValue(0, 1) == "5" and not localIsRed(locals, 0) and not localIsRed(locals, 1),
+      "At the next pause unchanged values return to their normal colour.")
+  elseif command == 6 and ID.DEBUGLOCALS then
+    dispatch(ID.DEBUGLOCALS)
+    debugger:Wait()
+    local locals = ide:GetLocals()
+    ok(locals:GetCellValue(0, 1) == "6" and not localIsRed(locals, 0),
+      "Restarting debugging clears local change history.")
   end
   command = command + 1
   if cmd == "Restart" then

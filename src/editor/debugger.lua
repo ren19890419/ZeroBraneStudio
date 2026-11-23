@@ -139,28 +139,71 @@ local function closeLocalsEditor(restoreFocus)
   if restoreFocus then ctrl:SetFocus() end
 end
 
-local function makeLocalRows(values, parent, params)
+local function isLocalPathKey(key)
+  local kind = type(key)
+  return kind == "string" or kind == "boolean" or kind == "number"
+end
+
+local function localValueType(value, types)
+  return type(types) == "table" and "table" or types or type(value)
+end
+
+local function sameLocalValue(value, previous, seen)
+  if rawequal(value, previous) then return true end
+  local kind = type(value)
+  if kind ~= type(previous) then return false end
+  if kind == "number" then return value ~= value and previous ~= previous end
+  -- Nested functions from the stack are deserialized as placeholder functions.
+  if kind == "function" then return true end
+  if kind ~= "table" then return false end
+
+  seen = seen or {}
+  if seen[value] then return seen[value] == previous end
+  seen[value] = previous
+  for key, child in pairs(value) do
+    if isLocalPathKey(key) and not sameLocalValue(child, previous[key], seen) then return false end
+  end
+  for key in pairs(previous) do
+    if isLocalPathKey(key) and value[key] == nil then return false end
+  end
+  return true
+end
+
+local function makeLocalRows(values, parent, params, previousValues)
   local rows = {}
   for key, entry in pairs(values) do
     if parent or type(entry) == "table" then
-      local value, types
+      local value, types, previous, previousTypes, hadPrevious, referenceChanged
+      if previousValues then previous = previousValues[key] end
       if parent then
         value = entry
         if type(parent.types) == "table" then types = parent.types[key] end
+        if type(parent.previousTypes) == "table" then previousTypes = parent.previousTypes[key] end
+        hadPrevious = previous ~= nil
       else
         value, types = entry[1], entry[3]
+        hadPrevious = type(previous) == "table"
+        if hadPrevious then
+          -- The debuggee's text preserves the identity of top-level references.
+          local kind = localValueType(value, types)
+          referenceChanged = (kind == "table" or kind == "function") and entry[2] ~= previous[2]
+          previous, previousTypes = previous[1], previous[3]
+        end
       end
+      local typeText = localValueType(value, types)
       local row = {
         key = key, label = fixUTF8(tostring(key)), value = value, types = types,
+        previous = previous, previousTypes = previousTypes,
         valueText = fixUTF8(serialize(value, params)),
-        typeText = type(types) == "table" and "table" or types or type(value),
+        typeText = typeText,
+        changed = hadPrevious and (referenceChanged or not sameLocalValue(value, previous)
+          or typeText ~= localValueType(previous, previousTypes)),
         expandable = type(value) == "table" and next(value) ~= nil,
         depth = parent and parent.depth + 1 or 0,
       }
-      local kind = type(key)
-      if not parent and kind == "string" and key:match("^[_%a][_%w]*$") then
+      if not parent and type(key) == "string" and key:match("^[_%a][_%w]*$") then
         row.name, row.path = key, {}
-      elseif parent and parent.name and (kind == "string" or kind == "boolean" or kind == "number") then
+      elseif parent and parent.name and isLocalPathKey(key) then
         row.name, row.path = parent.name, {unpack(parent.path)}
         row.path[#row.path + 1] = key
       end
@@ -186,11 +229,16 @@ local function renderLocalRows(ctrl)
   local old, new = ctrl:GetNumberRows(), #visibleLocals
   if new > old then ctrl:AppendRows(new - old) end
   if new < old then ctrl:DeleteRows(new, old - new) end
+  local normal = ctrl:GetDefaultCellTextColour()
+  local bg = ctrl:GetDefaultCellBackgroundColour()
+  local dark = 299 * bg:Red() + 587 * bg:Green() + 114 * bg:Blue() < 128000
+  local red = dark and wx.wxColour(255, 104, 104) or wx.wxColour(192, 0, 0)
   for index, row in ipairs(visibleLocals) do
     local disclosure = row.expandable and (row.expanded and "▾ " or "▸ ") or ""
     local indent = string.rep("    ", row.depth or 0)
     ctrl:SetCellValue(index - 1, NAME_COLUMN, indent .. disclosure .. row.label)
     ctrl:SetCellValue(index - 1, VALUE_COLUMN, row.valueText or "")
+    ctrl:SetCellTextColour(index - 1, VALUE_COLUMN, row.changed and red or normal)
     ctrl:SetCellValue(index - 1, TYPE_COLUMN, row.typeText or "")
   end
   ctrl:EndBatch()
@@ -198,7 +246,8 @@ end
 
 local function expandLocal(row)
   if not row.children then
-    row.children = makeLocalRows(row.value, row, ide:GetDebugger():GetDataOptions({maxlevel=1}))
+    local previous = type(row.previous) == "table" and row.previous or nil
+    row.children = makeLocalRows(row.value, row, ide:GetDebugger():GetDataOptions({maxlevel=1}), previous)
   end
   row.expanded = true
 end
@@ -228,13 +277,33 @@ local function restoreLocalSelection(ctrl, request, expanded)
   end
 end
 
+local function previousLocalsFrame(stack, previous, selected)
+  if not stack or not previous then return end
+  -- Match callers from the bottom, so entering a function doesn't shift the baseline.
+  local oldIndex = #previous
+  for index = #stack, selected, -1 do
+    local frame, oldFrame = stack[index], previous[oldIndex]
+    local call = type(frame) == "table" and frame[1]
+    local oldCall = type(oldFrame) == "table" and oldFrame[1]
+    if type(call) ~= "table" or type(oldCall) ~= "table"
+    or call[2] ~= oldCall[2] or call[3] ~= oldCall[3] or call[5] ~= oldCall[5] then return end
+    if index == selected then return oldFrame end
+    if call[4] ~= oldCall[4] then return end
+    oldIndex = oldIndex - 1
+  end
+end
+
 function debugger:renderLocals(message)
   local ctrl = self.localsCtrl
   if not ctrl then return end
 
-  local frame = self.localsStack and self.localsStack[self.localsFrame or 1]
+  local selected = self.localsFrame or 1
+  local frame = self.localsStack and self.localsStack[selected]
   local values = type(frame) == "table" and frame[2]
-  localRows = type(values) == "table" and makeLocalRows(values, nil, self:GetDataOptions({maxlevel=1})) or {}
+  local previous = previousLocalsFrame(self.localsStack, self.previousLocalsStack, selected)
+  local previousValues = previous and type(previous[2]) == "table" and previous[2] or nil
+  localRows = type(values) == "table"
+    and makeLocalRows(values, nil, self:GetDataOptions({maxlevel=1}), previousValues) or {}
   if #localRows == 0 then
     localRows[1] = {label = message or (self.localsStack and TR("No local variables.")
       or TR("Pause execution to inspect local variables."))}
@@ -242,7 +311,8 @@ function debugger:renderLocals(message)
   renderLocalRows(ctrl)
 end
 
-function debugger:resetLocals()
+function debugger:resetLocals(rememberPause)
+  self.previousLocalsStack = rememberPause and self.localsStack or nil
   self.localsFrame = nil
   if not self.localsStack then return end
   self.localsStack = nil
@@ -1021,7 +1091,7 @@ end
 function debugger:exec(command, func)
   local debugger = self
   if debugger.server and not debugger.running then
-    debugger:resetLocals()
+    debugger:resetLocals(true)
     copas.addthread(function()
         local debugger = debugger
         -- execute a custom function (if any) in the context of this thread
@@ -1059,6 +1129,7 @@ function debugger:exec(command, func)
               if debugger.loop then
                 debugger:updateStackSync()
                 debugger:updateWatchesSync()
+                debugger.previousLocalsStack = debugger.localsStack
               else
                 debugger:updateStackAndWatches()
                 return
