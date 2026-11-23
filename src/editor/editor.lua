@@ -1008,6 +1008,7 @@ function CreateEditor(bare)
       local deleted = bit.band(evtype, wxstc.wxSTC_MOD_DELETETEXT) ~= 0
       if (inserted or deleted) then
         SetAutoRecoveryMark()
+        PackageEventHandle("onEditorChange", editor)
 
         local linesChanged = inserted and event:GetLinesAdded() or 0
         -- collate events if they are for the same line

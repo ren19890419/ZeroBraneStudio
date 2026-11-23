@@ -212,15 +212,15 @@ local function nameTab(tab, name)
   if index ~= wx.wxNOT_FOUND then bottomnotebook:SetPageText(index, name) end
 end
 
-function OutputSetCallbacks(pid, proc, callback, endcallback)
+function OutputSetCallbacks(pid, proc, callback, endcallback, options)
   local streamin = proc and proc:GetInputStream()
   local streamerr = proc and proc:GetErrorStream()
   if streamin then
     streamins[pid] = {stream=streamin, callback=callback,
-      proc=proc, check=proc and proc.IsInputAvailable}
+      proc=proc, check=proc and proc.IsInputAvailable, raw=options and options.raw}
   end
   if streamerr then
-    streamerrs[pid] = {stream=streamerr, callback=callback,
+    streamerrs[pid] = {stream=streamerr, callback=options and options.stderr or callback,
       proc=proc, check=proc and proc.IsErrorAvailable}
   end
   customprocs[pid] = {proc=proc, endcallback=endcallback}
@@ -316,7 +316,7 @@ local function getStreams(all)
         str = str:sub(1, v.stream:LastRead())
         processed = processed + #str
 
-        local codepage = ide:GetCodePage()
+        local codepage = not v.raw and ide:GetCodePage()
         if codepage and FixUTF8(str) == nil and winapi then
           -- this looks like invalid UTF-8 content, which may be in a different code page;
           -- replace it with the UTF8, but do it line-by-line,

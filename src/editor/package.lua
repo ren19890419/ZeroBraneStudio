@@ -976,7 +976,7 @@ function ide:RemoveMenuItem(id, menu)
   return false
 end
 
-function ide:ExecuteCommand(cmd, wdir, callback, endcallback)
+function ide:ExecuteCommand(cmd, wdir, callback, endcallback, options)
   local proc = wx.wxProcess(self:GetOutput())
   proc:Redirect()
 
@@ -992,7 +992,8 @@ function ide:ExecuteCommand(cmd, wdir, callback, endcallback)
   if cwd then wx.wxFileName.SetCwd(cwd) end -- restore workdir
   if not pid then return pid, wx.wxSysErrorMsg() end
 
-  OutputSetCallbacks(pid, proc, callback or function() end, endcallback)
+  OutputSetCallbacks(pid, proc, callback or function() end, endcallback, options)
+  if options then return pid, nil, proc end
   return pid
 end
 

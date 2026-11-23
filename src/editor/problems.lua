@@ -11,45 +11,62 @@ local sizer = wx.wxBoxSizer(wx.wxVERTICAL)
 sizer:Add(summary, 0, wx.wxEXPAND + wx.wxALL, 5)
 sizer:Add(list, 1, wx.wxEXPAND)
 panel:SetSizer(sizer)
-local widths = {90, 220, 60, 480}
-for index, heading in ipairs({TR("Severity"), TR("File"), TR("Line"), TR("Message")}) do
+local widths = {90, 220, 60, 480, 110}
+for index, heading in ipairs({TR("Severity"), TR("File"), TR("Line"), TR("Message"), TR("Diagnostic Source")}) do
   list:InsertColumn(index - 1, heading)
   list:SetColumnWidth(index - 1, widths[index])
 end
 ide:AddPanelDocked(notebook, panel, "problemspanel", name, nil, false)
 
-local diagnostics, visible, scan = {}, {}, nil
+local diagnostics, external, visible, scan = {}, {}, {}, nil
 local unsavedByEditor = {}
 local analyzed = false
+local severityLabels = {error = TR("Error"), warning = TR("Warning"), information = TR("Information"), hint = TR("Hint")}
 local function fileKey(path)
-  return path:gsub("\\", "/")
+  path = path:gsub("\\", "/")
+  return ide.osname == "Windows" and path:lower() or path
+end
+
+local function collect(path)
+  local entries = {}
+  for _, entry in ipairs(diagnostics[path] or {}) do entries[#entries + 1] = entry end
+  for _, files in pairs(external) do
+    for _, entry in ipairs(files[path] or {}) do entries[#entries + 1] = entry end
+  end
+  return entries
 end
 
 local function render()
-  local paths = {}
-  for path in pairs(diagnostics) do paths[#paths + 1] = path end
+  local keys, paths = {}, {}
+  for path, entries in pairs(diagnostics) do if #entries > 0 then keys[path] = true end end
+  for _, files in pairs(external) do for path in pairs(files) do keys[path] = true end end
+  for path in pairs(keys) do paths[#paths + 1] = path end
   table.sort(paths)
   local project = ide:GetProject()
   list:Freeze()
   list:DeleteAllItems()
   visible = {}
-  local errors, warnings = 0, 0
+  local errors, warnings, notes = 0, 0, 0
   for _, path in ipairs(paths) do
-    for _, entry in ipairs(diagnostics[path]) do
-      local isError = entry.severity == "error"
-      if isError then errors = errors + 1 else warnings = warnings + 1 end
-      local row = list:InsertItem(#visible, isError and TR("Error") or TR("Warning"))
+    for _, entry in ipairs(collect(path)) do
+      if entry.severity == "error" then errors = errors + 1
+      elseif entry.severity == "information" or entry.severity == "hint" then notes = notes + 1
+      else warnings = warnings + 1 end
+      local row = list:InsertItem(#visible, severityLabels[entry.severity] or severityLabels.warning)
       visible[row + 1] = entry
       local file = wx.wxFileName(entry.file)
       if project and not entry.editor then file:MakeRelativeTo(project) end
       list:SetItem(row, 1, file:GetFullPath())
       list:SetItem(row, 2, entry.line > 0 and tostring(entry.line) or "")
       list:SetItem(row, 3, ((entry.message or ""):gsub("[\r\n]+", " ")))
+      list:SetItem(row, 4, entry.source or TR("Lua Analyzer"))
     end
   end
   list:Thaw()
-  summary:SetLabel(scan and TR("Analyzing project...") or not analyzed and TR("Run Analyze to check Lua files.")
-    or TR("%d errors, %d warnings"):format(errors, warnings))
+  local totals = notes > 0 and TR("%d errors, %d warnings, %d notes"):format(errors, warnings, notes)
+    or TR("%d errors, %d warnings"):format(errors, warnings)
+  summary:SetLabel(scan and TR("Analyzing project...")
+    or not analyzed and not next(external) and TR("Run Analyze to check Lua files.") or totals)
 end
 
 local function analyze(source, path)
@@ -58,7 +75,19 @@ local function analyze(source, path)
 end
 
 local problems = ide:AddPackage("core.problems", {
-  GetDiagnostics = function(self, path) return diagnostics[fileKey(path)] or {} end,
+  GetDiagnostics = function(self, path) return collect(fileKey(path)) end,
+  SetDiagnostics = function(self, source, path, entries)
+    local files = external[source] or {}
+    external[source] = files
+    for _, entry in ipairs(entries) do entry.source = source end
+    files[fileKey(path)] = #entries > 0 and entries or nil
+    ide:DoWhenIdle(render, "core.problems.render")
+  end,
+  ClearDiagnostics = function(self, source)
+    if not external[source] then return end
+    external[source] = nil
+    ide:DoWhenIdle(render, "core.problems.render")
+  end,
   Show = function() ide:ActivateNotebookPage(panel) end,
   AnalyzeEditor = function(self, editor, show)
     if not editor or editor.spec.apitype ~= "lua" then return end
@@ -121,7 +150,7 @@ local problems = ide:AddPackage("core.problems", {
     render()
   end,
   onProjectClose = function()
-    diagnostics, scan, analyzed = {}, nil, false
+    diagnostics, external, scan, analyzed = {}, {}, nil, false
     unsavedByEditor = {}
     render()
   end,
@@ -139,9 +168,14 @@ list:Connect(wx.wxEVT_COMMAND_LIST_ITEM_ACTIVATED, function(event)
   local line = math.min(math.max(0, entry.line - 1), editor:GetLineCount() - 1)
   local position = editor:PositionFromLine(line)
   local endpos = editor:GetLineEndPosition(line)
-  for column = 2, entry.column or 1 do
-    if position >= endpos then break end
-    position = editor:PositionAfter(position)
+  local remaining = (entry.column or 1) - 1
+  while position < endpos and remaining > 0 do
+    local after = editor:PositionAfter(position)
+    local bytes = after - position
+    if bytes <= 0 then break end
+    local units = entry.encoding == "utf-8" and bytes or entry.encoding == "utf-16" and bytes == 4 and 2 or 1
+    if units > remaining then break end
+    position, remaining = after, remaining - units
   end
   editor:GotoPosDelayed(position)
 end)

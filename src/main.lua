@@ -602,7 +602,7 @@ for _, file in ipairs({
     "gui", "filetree", "output", "debugger", "outline", "commandbar",
     "editor", "findreplace", "commands", "autocomplete", "shellbox", "markers",
     "menu_file", "menu_edit", "menu_search", "menu_view", "menu_project", "menu_help",
-    "print", "inspect", "problems", "runprofiles" }) do
+    "print", "inspect", "problems", "runprofiles", "luals" }) do
   dofile("src/editor/"..file..".lua")
 end
 
