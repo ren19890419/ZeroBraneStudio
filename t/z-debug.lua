@@ -6,7 +6,7 @@ local tempPath = wx.wxFileName.CreateTempFileName("zbs-debug", tempFile)
 tempFile:Close()
 FileRemove(tempPath)
 local debugfile = tempPath..".lua"
-local fields = {"count = 10"}
+local fields = {"count = 10", '[1] = 31', '[false] = 25', '["a.b"] = 12', '["end"] = 15'}
 for index = 1, 45 do fields[#fields + 1] = ("field%02d = %d"):format(index, index) end
 FileWrite(debugfile, table.concat({
   "#!/usr/bin/env lua",
@@ -246,6 +246,31 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     local item = findLocalRow(locals, "item")
     ok(item ~= nil and not findLocalRow(locals, "count"), "A manually collapsed table stays closed after stepping.")
     if item then locals:ToggleLocal(item) end
+    ok(ID.ADDLOCALTOWATCH ~= nil, "Locals provides an Add to Watch menu command.")
+    if ID.ADDLOCALTOWATCH then
+      local watch = ide:GetWatch()
+      local function addWatch(name)
+        dispatch(ID.DEBUGLOCALS)
+        debugger:Wait()
+        local row = findLocalRow(locals, name)
+        if row == nil then return end
+        locals:SetGridCursor(row, 1)
+        locals:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.ADDLOCALTOWATCH))
+        debugger:Wait()
+        local selected = watch:GetSelection()
+        return selected:IsOk() and watch:GetItemText(selected) or nil
+      end
+      is(addWatch("a"), "a = 6", "The Locals command adds a variable and evaluates it in Watch.")
+      is(addWatch("count"), "data.item.count = 11", "The Locals command adds a nested field using its full path.")
+      is(addWatch("1"), "data.item[1] = 31", "The Locals command preserves a numeric table key.")
+      is(addWatch("false"), "data.item[false] = 25", "The Locals command preserves a boolean table key.")
+      is(addWatch("a.b"), 'data.item["a.b"] = 12', "The Locals command quotes a key containing punctuation.")
+      is(addWatch("end"), 'data.item["end"] = 15', "The Locals command quotes a Lua keyword used as a key.")
+      local before = watch:GetChildrenCount(watch:GetRootItem(), false)
+      is(addWatch("a"), "a = 6", "Adding an existing watch selects that entry.")
+      is(watch:GetChildrenCount(watch:GetRootItem(), false), before, "Adding an existing watch does not duplicate it.")
+      ok(ide:IsWindowShown(watch), "The Watch window is displayed after adding an expression.")
+    end
   elseif command == 6 and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()

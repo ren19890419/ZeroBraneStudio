@@ -1516,13 +1516,38 @@ for _,k in ipairs({'and', 'break', 'do', 'else', 'elseif', 'end', 'false',
   'for', 'function', 'goto', 'if', 'in', 'local', 'nil', 'not', 'or', 'repeat',
   'return', 'then', 'true', 'until', 'while'}) do keyword[k] = true end
 
+local function isLuaName(name)
+  return type(name) == "string" and name:match("^[%l%u_][%w_]*$")
+end
+
 local function stringifyKeyIntoPrefix(name, num)
   return (type(name) == "number"
     and (num and num == name and '' or ("[%s] = "):format(name))
-    or type(name) == "string" and (name:match("^[%l%u_][%w_]*$") and not keyword[name]
+    or type(name) == "string" and (isLuaName(name) and not keyword[name]
       and ("%s = "):format(name)
       or ("[%q] = "):format(name))
     or ("[%s] = "):format(tostring(name)))
+end
+
+local function localWatchExpression(row)
+  local path = localPath(row)
+  if not path or type(path[1]) ~= "string" then return end
+
+  local name = path[1]
+  local vararg = name:match("^%(%*vararg (%d+)%)$")
+  if not vararg and not isLuaName(name) then return end
+
+  local parts = {vararg and ("(select(%s, ...))"):format(vararg) or name}
+  for index = 2, #path do
+    local key = path[index]
+    if not isLocalPathKey(key) then return end
+    if isLuaName(key) and not keyword[key] then
+      parts[#parts + 1] = "." .. key
+    else
+      parts[#parts + 1] = "[" .. fixUTF8(serialize(key, {comment=false})) .. "]"
+    end
+  end
+  return table.concat(parts)
 end
 
 local function debuggerCreateStackWindow()
@@ -2183,6 +2208,41 @@ do
     input:SelectAll()
   end
 
+  local function selectedWatchExpression()
+    local debugger = ide:GetDebugger()
+    if not debugger.server or debugger.running or not debugger.localsStack or debugger.scratchpad
+    or (debugger.options or {}).noeval then return end
+    return localWatchExpression(visibleLocals[ctrl:GetGridCursorRow() + 1])
+  end
+
+  local function showWatchMenu(position)
+    local menu = ide:MakeMenu {{ ID.ADDLOCALTOWATCH, TR("Add to &Watch") }}
+    menu:Enable(ID.ADDLOCALTOWATCH, selectedWatchExpression() ~= nil)
+    ctrl:PopupMenu(menu, position)
+  end
+
+  ctrl:Connect(ID.ADDLOCALTOWATCH, wx.wxEVT_COMMAND_MENU_SELECTED, function()
+    local expression = selectedWatchExpression()
+    if not expression then return end
+    local item = ide:AddWatch(expression)
+    if not item or not item:IsOk() then return end
+    local watch = ide:GetWatch()
+    ide:ActivateNotebookPage(watch)
+    watch:SelectItem(item)
+    watch:EnsureVisible(item)
+    watch:SetFocus()
+  end)
+  ctrl:Connect(wx.wxEVT_GRID_CELL_RIGHT_CLICK, function(event)
+    closeLocalsEditor()
+    ctrl:ClearSelection()
+    ctrl:SetGridCursor(event:GetRow(), event:GetCol())
+    showWatchMenu(event:GetPosition())
+  end)
+  ctrl:Connect(wx.wxEVT_CONTEXT_MENU, function(event)
+    local position = event:GetPosition()
+    if position:GetX() == -1 and position:GetY() == -1 then showWatchMenu(wx.wxDefaultPosition)
+    else event:Skip() end
+  end)
   ctrl:Connect(wx.wxEVT_GRID_CELL_LEFT_DCLICK, function(event)
     ctrl:EditLocal(event:GetRow(), event:GetCol())
   end)

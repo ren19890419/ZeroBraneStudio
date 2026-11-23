@@ -1,6 +1,7 @@
 return {
   ["&Locals"] = "局部变量", -- src\editor\menu_project.lua
   ["Locals"] = "局部变量", -- src\editor\debugger.lua
+  ["Add to &Watch"] = "添加到监视", -- src\editor\debugger.lua
   ["Name"] = "名称", -- src\editor\debugger.lua
   ["Value"] = "值", -- src\editor\debugger.lua
   ["Type"] = "类型", -- src\editor\debugger.lua

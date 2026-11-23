@@ -1,6 +1,7 @@
 return {
   ["&Locals"] = "區域變數", -- src\editor\menu_project.lua
   ["Locals"] = "區域變數", -- src\editor\debugger.lua
+  ["Add to &Watch"] = "加入監視", -- src\editor\debugger.lua
   ["Name"] = "名稱", -- src\editor\debugger.lua
   ["Value"] = "值", -- src\editor\debugger.lua
   ["Type"] = "類型", -- src\editor\debugger.lua
