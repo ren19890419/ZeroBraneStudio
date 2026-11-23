@@ -225,14 +225,16 @@ local function sameLaunchContext(launch)
   return ide.interpreter == launch.interpreter and ide:GetProject() == launch.project
 end
 
-local function startDebugging(fname, debtype)
+local function startDebugging(fname, debtype, stopOnEntry)
   local debugger = ide:GetDebugger()
   if not debugger:IsListening() then debugger:Listen() end
   local debcall = debuggers[debtype or "debug"]:format(debugger:GetHostName(), debugger:GetPortNumber())
   local filename, interpreter, project = fname:GetFullPath(), ide.interpreter, ide:GetProject()
+  if stopOnEntry then LoadFile(filename, nil, true, true) end
   local pid = runInterpreter(fname, debcall)
   if pid and debtype ~= "scratchpad" then
-    local launch = { pid = pid, filename = filename, interpreter = interpreter, project = project }
+    local launch = { pid = pid, filename = filename, interpreter = interpreter, project = project,
+      stopOnEntry = stopOnEntry }
     ide:GetDebugger().launch = launch
     launch.tracked = ide:GetOutput():AfterProcessExit(pid, function()
       local debugger = ide:GetDebugger()
@@ -245,7 +247,7 @@ local function startDebugging(fname, debtype)
   return pid
 end
 
-function ProjectDebug(skipcheck, debtype)
+function ProjectDebug(skipcheck, debtype, stopOnEntry)
   local debugger = ide:GetDebugger()
   if (debugger:IsConnected()) then
     if (debugger.scratchpad and debugger.scratchpad.paused) then
@@ -256,9 +258,11 @@ function ProjectDebug(skipcheck, debtype)
       debugger:Run()
     end
   else
-    local fname = getNameToRun(ide:GetEditor(), skipcheck)
+    local editor = ide:GetEditor()
+    local filename = not editor and stopOnEntry and ide:GetProjectStartFile() or nil
+    local fname = getNameToRun(editor, skipcheck, filename)
     if not fname then return end
-    return startDebugging(fname, debtype)
+    return startDebugging(fname, debtype, stopOnEntry)
   end
   return true
 end
@@ -434,13 +438,26 @@ frame:Connect(ID_RUNTO, wx.wxEVT_UPDATE_UI,
       and (ide:GetEditor() ~= nil) and (not debugger.scratchpad))
   end)
 
+local function canStepInto(debugger)
+  if debugger.scratchpad then return false end
+  local editor = ide:GetEditor()
+  if debugger:IsConnected() then return editor ~= nil and not debugger:IsRunning() end
+  local interpreter = ide.interpreter
+  return interpreter ~= nil and interpreter.hasdebugger and interpreter.frun ~= nil
+    and ide:GetLaunchedProcess() == nil
+    and (editor ~= nil or ide:GetProjectStartFile() ~= nil)
+end
+
 frame:Connect(ID_STEP, wx.wxEVT_COMMAND_MENU_SELECTED,
-  function () ide:GetDebugger():Step() end)
+  function ()
+    local debugger = ide:GetDebugger()
+    if not canStepInto(debugger) then return end
+    if debugger:IsConnected() then debugger:Step()
+    else ProjectDebug(nil, nil, true) end
+  end)
 frame:Connect(ID_STEP, wx.wxEVT_UPDATE_UI,
   function (event)
-    local debugger = ide:GetDebugger()
-    event:Enable((debugger:IsConnected() ~= nil) and (not debugger:IsRunning())
-      and (ide:GetEditor() ~= nil) and (not debugger.scratchpad))
+    event:Enable(canStepInto(ide:GetDebugger()) and true or false)
   end)
 
 frame:Connect(ID_STEPOVER, wx.wxEVT_COMMAND_MENU_SELECTED,

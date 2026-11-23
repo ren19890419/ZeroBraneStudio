@@ -353,7 +353,7 @@ function debugger:ActivateDocument(file, line, activatehow)
         if line == 0 then -- special case; find the first executable line
           line = math.huge
           local loadstring = loadstring or load
-          local func = loadstring(editor:GetTextDyn())
+          local func = loadstring(StripShebang(editor:GetTextDyn()))
           if func then -- .activelines == {[3] = true, [4] = true, ...}
             for l in pairs(debug.getinfo(func, "L").activelines) do
               if l < line then line = l end
@@ -639,8 +639,12 @@ function debugger:Listen(start)
 
       -- this may be a remote call without using an interpreter and as such
       -- debugger.options may not be set, but runonstart is still configured.
+      local launch = debugger.launch
+      if launch and launch.pid ~= ide:GetLaunchedProcess() then launch = nil end
+      local stopOnEntry = launch and launch.stopOnEntry
       local runstart = options.runstart
-      if runstart == nil then runstart = ide.config.debugger.runonstart end
+      if stopOnEntry then runstart = false
+      elseif runstart == nil then runstart = ide.config.debugger.runonstart end
 
       -- support allowediting as set in the interpreter or config
       if options.allowediting == nil then options.allowediting = ide.config.debugger.allowediting end
@@ -663,8 +667,7 @@ function debugger:Listen(start)
       if PackageEventHandle("onDebuggerPreLoad", debugger, options) == false then return end
 
       local editor = ide:GetEditor()
-      local launch = debugger.launch
-      local startfile = launch and launch.pid == ide:GetLaunchedProcess() and launch.filename
+      local startfile = launch and launch.filename
         or ide:GetProjectStartFile() or options.startwith
         or (editor and SaveIfModified(editor) and ide:GetDocument(editor):GetFilePath())
 
@@ -730,9 +733,12 @@ function debugger:Listen(start)
             debugger:ActivateDocument(file, line)
             runstart = false
           end
-        elseif file and line and not debugger:ActivateDocument(file, line) then
-          displayError(TR("Debugging suspended at '%s:%s' (couldn't activate the file).")
-            :format(file, line))
+        elseif stopOnEntry or file and line then
+          file, line = file or options.startwith, line or 0
+          if not debugger:ActivateDocument(file, line) then
+            displayError(TR("Debugging suspended at '%s:%s' (couldn't activate the file).")
+              :format(file, line))
+          end
         end
       elseif not debugger.scratchpad then
         local file, line, err = debugger:loadfile(startfile)

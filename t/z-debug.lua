@@ -1,24 +1,39 @@
 local pkg = ...
 local unpack = table.unpack or unpack
-local debugger = ide:GetDebugger()
--- start debugger server
-debugger:Listen()
 -- save a test file and then load it
 local debugfile = MergeFullPath(wx.wxStandardPaths.Get():GetTempDir(), "debug.lua")
-FileWrite(debugfile, "local a = 1+2\na = 2+3\na = 3+4\na = 4+5\na = 5+6")
+FileWrite(debugfile, "#!/usr/bin/env lua\n-- Debugger entry\n\nlocal a = 1+2\na = 2+3\na = 3+4\na = 4+5\na = 5+6")
+pkg.onAppClose = function() FileRemove(debugfile) end
 ok(wx.wxFileExists(debugfile), "File created before starting debugging.")
 local editor = ide:ActivateFile(debugfile)
-editor:BreakpointToggle(4)
+local breakpointLine = 8
+editor:BreakpointToggle(breakpointLine - 1)
 
 ide:GetMenuBar():Check(ID.CLEAROUTPUTENABLE, false)
-local firstpid = ProjectDebug()
+local runonstart = ide.config.debugger.runonstart
+ide.config.debugger.runonstart = true
+local frame = ide:GetMainFrame()
+local enabled = wx.wxUpdateUIEvent(ID.STEP)
+frame:ProcessEvent(enabled)
+ok(enabled:GetEnabled(), "Step Into is enabled before debugging starts.")
+local function stepInto()
+  frame:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.STEP))
+end
+stepInto()
+local firstpid = ide:GetLaunchedProcess()
+ok(firstpid ~= nil, "Step Into launches a debug process.")
+if not firstpid then
+  ide.config.debugger.runonstart = runonstart
+  pkg.onIdleOnce = function() pkg:report() end
+  return
+end
 
 local commands = {
-  {debugfile, 1, "Step"},
-  {debugfile, 2, "RunTo", {editor, 4}},
-  {debugfile, 4, "Run"},
-  {debugfile, 5, "Restart"},
-  {debugfile, 1, "Stop"},
+  {debugfile, 4, "Step"},
+  {debugfile, 5, "RunTo", {editor, 7}},
+  {debugfile, 7, "Run"},
+  {debugfile, breakpointLine, "Restart"},
+  {debugfile, breakpointLine, "Stop"},
 }
 local command = 1
 local restarting, othereditor
@@ -34,6 +49,10 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
   is(line, aline, "Line number is reported as expected after debugger activation ("..command.."/"..#commands..").")
   if debugger:IsRunning() then debugger:Wait() end
   if command == 1 then
+    debugger:EvalAsync("a == nil", function(val)
+        is(val, "true", "Step Into stops before executing the first statement.")
+      end)
+    debugger:Wait()
     debugger:EvalAsync("1+2", function(val)
         is(val, "3", "Asynchronous expression evaluation in debugger returns expected result.")
       end)
@@ -64,7 +83,7 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       ok(pid and pid ~= firstpid, "Restart starts a new process for the original entry file.")
       ok(not wx.wxProcess.Exists(firstpid), "The old debug process exits before the new session starts.")
     end
-    debugger[cmd](debugger, unpack(args or {}))
+    if cmd == "Step" then stepInto() else debugger[cmd](debugger, unpack(args or {})) end
   end
 end
 pkg.onDebuggerClose = function()
@@ -76,6 +95,6 @@ pkg.onDebuggerClose = function()
 
   pkg.onDebuggerActivate = nil
   pkg.onDebuggerClose = nil
+  ide.config.debugger.runonstart = runonstart
   pkg:report()
 end
-pkg.onAppClose = function() FileRemove(debugfile) end
