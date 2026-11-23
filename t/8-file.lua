@@ -41,6 +41,52 @@ ok(ide:ActivateFile(fullpath..':10'), "Load fullpath/file:line.")
 ok(not ide:ActivateFile(fullpath..'/foo.bar:10'), "Doesn't load non-existent fullpath/file:line.")
 ClosePage() -- close activated file
 
+do
+  local file = wx.wxFile()
+  local path = wx.wxFileName.CreateTempFileName("zbs-reload", file)
+  file:Close()
+  local lfs = require('lfs')
+  local stamp = os.time() - 10
+  local function writeFile(text)
+    stamp = stamp + 2
+    assert(FileWrite(path, text))
+    assert(lfs.touch(path, stamp, stamp))
+  end
+  local function activateApp()
+    ide:GetApp():ProcessEvent(wx.wxActivateEvent(wx.wxEVT_ACTIVATE_APP, true))
+    repeat
+      ide:GetMainFrame():ProcessEvent(wx.wxIdleEvent())
+    until #ide.onidle == 0
+  end
+
+  local autoreload = ide.config.editor.autoreload
+  ide.config.editor.autoreload = true
+  writeFile("original")
+  local editor = assert(ide:LoadFile(path))
+  ide:GetProjectTree():SetFocus()
+  writeFile("external edit")
+  activateApp()
+  is(editor:GetTextDyn(), "external edit", "App activation reloads the selected file without editor focus.")
+
+  editor:SetTextDyn("unsaved edit")
+  writeFile("conflicting edit")
+  local messageBox, prompts = wx.wxMessageBox, 0
+  wx.wxMessageBox = function()
+    prompts = prompts + 1
+    return wx.wxNO
+  end
+  activateApp()
+  activateApp()
+  wx.wxMessageBox = messageBox
+  is(prompts, 1, "App activation prompts once for a disk change conflicting with unsaved edits.")
+  is(editor:GetTextDyn(), "unsaved edit", "Declining reload preserves unsaved edits.")
+
+  ide:GetDocument(editor):SetModified(false)
+  ide:GetDocument(editor):Close()
+  ide.config.editor.autoreload = autoreload
+  FileRemove(path)
+end
+
 local sep = GetPathSeparator()
 like(ide:GetFileList('t', true, 'test.lua', {path = true})[1], "^t"..sep.."test.lua$",
   "Traversing `t`, including path in the results (1/6)")

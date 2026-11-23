@@ -106,8 +106,9 @@ local function updateBraceMatch(editor)
 end
 
 -- Check if file is altered, show dialog to reload it
-local function isFileAlteredOnDisk(editor)
-  if not editor then return end
+local checkingFile = false
+function CheckFileAlteredOnDisk(editor)
+  if checkingFile or not editor or ide:IsExiting() then return end
 
   local doc = ide:GetDocument(editor)
   if doc then
@@ -124,6 +125,8 @@ local function isFileAlteredOnDisk(editor)
           ide:GetProperty("editormessage"),
           wx.wxOK + wx.wxCENTRE, ide.frame)
       elseif not editor:GetReadOnly() and modTime:IsValid() and oldModTime:IsEarlierThan(modTime) then
+        -- A modal prompt can trigger another focus or activation event.
+        checkingFile = true
         local ret = edcfg.autoreload and (not doc:IsModified()) and wx.wxYES
           or wx.wxMessageBox(
             TR("File '%s' has been modified on disk."):format(fileName)
@@ -131,9 +134,12 @@ local function isFileAlteredOnDisk(editor)
             ide:GetProperty("editormessage"),
             wx.wxYES_NO + wx.wxCENTRE, ide.frame)
 
-        if ret ~= wx.wxYES or ReLoadFile(filePath, editor, true) then
-          doc:SetFileModifiedTime(GetFileModTime(filePath))
+        if ret == wx.wxYES then
+          ReLoadFile(filePath, editor, true, true)
+        else
+          doc:SetFileModifiedTime(modTime)
         end
+        checkingFile = false
       end
     end
   end
@@ -1378,7 +1384,7 @@ function CreateEditor(bare)
       if inhandler or ide:IsExiting() then return end
       inhandler = true
       PackageEventHandle("onEditorFocusSet", editor)
-      isFileAlteredOnDisk(editor)
+      CheckFileAlteredOnDisk(editor)
       inhandler = false
     end)
 

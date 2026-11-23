@@ -186,10 +186,10 @@ function LoadFile(filePath, editor, file_must_exist, skipselection)
 
   editor:EmptyUndoBuffer()
   local doc = ide:GetDocument(editor)
-  if doc then -- existing editor; switch to the tab
-    notebook:SetSelection(doc:GetTabIndex())
-  else -- the editor has not been added to notebook
+  if not doc then
     doc = AddEditor(editor, wx.wxFileName(filePath):GetFullName() or ide:GetDefaultFileName())
+  elseif not skipselection then
+    notebook:SetSelection(doc:GetTabIndex())
   end
   doc.filePath = filePath
   doc.fileName = wx.wxFileName(filePath):GetFullName()
@@ -834,6 +834,11 @@ ide.editorApp:Connect(wx.wxEVT_ACTIVATE_APP,
       -- disable UI refresh when app is inactive, but only when not running
       wx.wxUpdateUIEvent.SetUpdateInterval(
         (active or ide:GetLaunchedProcess()) and updateInterval or -1)
+
+      if active then
+        -- The selected editor may not receive focus when returning to the app.
+        ide:DoWhenIdle(function() CheckFileAlteredOnDisk(ide:GetEditor()) end, "checkfile")
+      end
 
       PackageEventHandle(active and "onAppFocusSet" or "onAppFocusLost", ide.editorApp)
     end
