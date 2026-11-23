@@ -6,15 +6,17 @@ local tempPath = wx.wxFileName.CreateTempFileName("zbs-debug", tempFile)
 tempFile:Close()
 FileRemove(tempPath)
 local debugfile = tempPath..".lua"
+local fields = {"count = 10"}
+for index = 1, 45 do fields[#fields + 1] = ("field%02d = %d"):format(index, index) end
 FileWrite(debugfile, table.concat({
   "#!/usr/bin/env lua",
   "-- Debugger entry",
   "",
-  "local a, data, stable = 1+2, {handle = io.stdout, item = {count = 10}}, 42",
-  "a = 2+3; data.item.count = 11",
+  "local a, data, stable = 1+2, {handle = io.stdout, item = {" .. table.concat(fields, ", ") .. "}}, 42",
+  "a = 2+3; data.item.count = 11; data.item.added = true; data.item.field20 = 99",
   "local function add()",
   "  a = a + 1",
-  "end",
+  "end; data.item.field20 = nil",
   "add()",
   "a = 5+6",
   "a = a + 1",
@@ -57,6 +59,15 @@ local function findLocalRow(locals, name)
     if label == name then return row end
   end
 end
+local function localCellY(locals, row)
+  local rect = locals:BlockToDeviceRect(wx.wxGridCellCoords(row, 0), wx.wxGridCellCoords(row, 2))
+  if rect:GetHeight() > 0 then return rect:GetY() end
+end
+local function scrollLocals(locals, axis, position)
+  local event = wx.wxScrollWinEvent(wx.wxEVT_SCROLLWIN_THUMBTRACK, position, axis)
+  event:SetEventObject(locals)
+  locals:GetEventHandler():ProcessEvent(event)
+end
 dispatch(ID.STEP)
 local firstpid = ide:GetLaunchedProcess()
 ok(firstpid ~= nil, "Step Into launches a debug process.")
@@ -79,6 +90,7 @@ local commands = {
 }
 local command = 1
 local restarting, startingDebug, othereditor
+local inspectedRow, inspectedY, inspectedUnit, savedViewX
 
 -- wait for the connection to be initiated
 pkg.onDebuggerActivate = function(self, debugger, file, line)
@@ -172,6 +184,21 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       if item then locals:ToggleLocal(item) end
       local count = findLocalRow(locals, "count")
       ok(count ~= nil and locals:GetCellValue(count, 1) == "10", "The nested table is expanded before stepping.")
+      inspectedRow = findLocalRow(locals, "field20")
+      if inspectedRow then
+        local rect = locals:CellToRect(inspectedRow, 1)
+        locals:SetColSize(2, locals:GetColSize(2) + locals:GetClientSize():GetWidth())
+        locals:SetGridCursor(inspectedRow, 1)
+        scrollLocals(locals, wx.wxHORIZONTAL, 1)
+        scrollLocals(locals, wx.wxVERTICAL, 1)
+        local unit = locals:CellToRect(2, 1):GetY() - (localCellY(locals, 2) or 0)
+        if unit > 0 then
+          scrollLocals(locals, wx.wxVERTICAL, math.floor((rect:GetY() - 2 * rect:GetHeight()) / unit))
+        end
+        local scrollX, scrollY = locals:GetScrollPos(wx.wxHORIZONTAL), locals:GetScrollPos(wx.wxVERTICAL)
+        savedViewX, inspectedY, inspectedUnit = scrollX, localCellY(locals, inspectedRow), unit
+        ok(scrollX > 0 and scrollY > 0 and inspectedY ~= nil, "The selected field is in a scrolled Locals viewport.")
+      end
     end
   elseif command == 3 and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)
@@ -187,6 +214,13 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     local count = findLocalRow(locals, "count")
     ok(count ~= nil and locals:GetCellValue(count, 1) == "11" and localIsRed(locals, count),
       "Step Over keeps nested tables expanded and shows the changed field in red.")
+    local inspected = findLocalRow(locals, "field20")
+    ok(inspected ~= nil and inspected ~= inspectedRow and locals:GetCellValue(inspected, 1) == "99"
+      and locals:GetGridCursorRow() == inspected and locals:GetGridCursorCol() == 1,
+      "Step Over keeps the same nested Value cell selected when its row moves.")
+    local y = inspected and localCellY(locals, inspected)
+    ok(y ~= nil and inspectedY ~= nil and math.abs(y - inspectedY) < inspectedUnit
+      and locals:GetScrollPos(wx.wxHORIZONTAL) == savedViewX, "Step Over restores the Locals scroll position.")
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()
     ok(localIsRed(locals, 0), "Refreshing Locals at the same pause keeps its highlight.")
@@ -202,6 +236,8 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     ok(count ~= nil and locals:GetCellValue(count, 1) == "11" and not localIsRed(locals, count),
       "An unchanged field stays visible in its expanded table at the next pause.")
     local item = findLocalRow(locals, "item")
+    ok(item ~= nil and not findLocalRow(locals, "field20") and locals:GetGridCursorRow() == item,
+      "Removing the selected field selects its remaining parent.")
     if item then locals:ToggleLocal(item) end
   elseif command == 5 and ID.DEBUGLOCALS then
     dispatch(ID.DEBUGLOCALS)

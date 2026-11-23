@@ -192,7 +192,7 @@ local function makeLocalRows(values, parent, params, previousValues)
       end
       local typeText = localValueType(value, types)
       local row = {
-        key = key, label = fixUTF8(tostring(key)), value = value, types = types,
+        key = key, parent = parent, label = fixUTF8(tostring(key)), value = value, types = types,
         previous = previous, previousTypes = previousTypes,
         valueText = fixUTF8(serialize(value, params)),
         typeText = typeText,
@@ -244,6 +244,111 @@ local function renderLocalRows(ctrl)
   ctrl:EndBatch()
 end
 
+local function findLocalChild(rows, key)
+  for _, row in ipairs(rows) do
+    if row.key == key then return row end
+  end
+end
+
+local function visibleLocalIndex(row)
+  if not row then return end
+  for index, visible in ipairs(visibleLocals) do
+    if visible == row then return index - 1 end
+  end
+end
+
+local function localPath(row)
+  local path = {}
+  while row and row.key ~= nil do
+    table.insert(path, 1, row.key)
+    row = row.parent
+  end
+  if #path > 0 then return path end
+end
+
+local function findVisibleLocal(path, allowParent)
+  if not path then return end
+  local rows, found = localRows
+  for index, key in ipairs(path) do
+    local row = findLocalChild(rows, key)
+    if not row then break end
+    if index == #path then return row end
+    found = row
+    if not row.expanded then break end
+    rows = row.children
+  end
+  if allowParent then return found end
+end
+
+local function localRowsRect(ctrl, first, last)
+  return ctrl:BlockToDeviceRect(wx.wxGridCellCoords(first, NAME_COLUMN),
+    wx.wxGridCellCoords(last, TYPE_COLUMN))
+end
+
+local function topLocalRow(ctrl)
+  if #visibleLocals == 0 then return end
+  -- A prefix reaches the viewport as soon as it contains the first visible row.
+  local first, last = 0, #visibleLocals - 1
+  while first < last do
+    local middle = math.floor((first + last) / 2)
+    if localRowsRect(ctrl, 0, middle):GetHeight() > 0 then last = middle
+    else first = middle + 1 end
+  end
+  local height = localRowsRect(ctrl, first, first):GetHeight()
+  if height <= 0 then return end
+  local offset = ctrl:GetRowSize(first) - height
+  if offset > 0 and height == ctrl:GetGridWindow():GetClientSize():GetHeight() then return end
+  return first, offset
+end
+
+local function saveLocalViewport(ctrl)
+  local row, column = ctrl:GetGridCursorRow(), ctrl:GetGridCursorCol()
+  local x, y = ctrl:GetScrollPos(wx.wxHORIZONTAL), ctrl:GetScrollPos(wx.wxVERTICAL)
+  local viewport = {
+    row = row, column = column, selection = localPath(visibleLocals[row + 1]), x = x, y = y,
+    selectedVisible = row >= 0 and row < #visibleLocals and column >= 0 and ctrl:IsVisible(row, column, false),
+  }
+  if y > 0 then
+    local top, offset = topLocalRow(ctrl)
+    if top then
+      viewport.anchor = localPath(visibleLocals[top + 1])
+      viewport.offset = offset
+      viewport.unit = (ctrl:CellToRect(top, NAME_COLUMN):GetY() + offset) / y
+    end
+  end
+  return viewport
+end
+
+local function scrollLocalGrid(ctrl, axis, position)
+  if position == ctrl:GetScrollPos(axis) then return end
+  -- Route through the grid's native scrolling handler.
+  local event = wx.wxScrollWinEvent(wx.wxEVT_SCROLLWIN_THUMBTRACK, position, axis)
+  event:SetEventObject(ctrl)
+  ctrl:GetEventHandler():ProcessEvent(event)
+end
+
+local function restoreLocalViewport(ctrl, viewport)
+  local row, column, x, y = 0, NAME_COLUMN, 0, 0
+  if viewport then
+    row = visibleLocalIndex(findVisibleLocal(viewport.selection, true))
+      or math.min(math.max(0, viewport.row), #visibleLocals - 1)
+    column = math.max(NAME_COLUMN, viewport.column)
+    x, y = viewport.x, viewport.y
+    local top = visibleLocalIndex(findVisibleLocal(viewport.anchor))
+    if top and viewport.unit > 0 then
+      local pixel = ctrl:CellToRect(top, NAME_COLUMN):GetY() + viewport.offset
+      y = math.floor(pixel / viewport.unit + 0.5)
+    end
+  end
+  ctrl:ClearSelection()
+  ctrl:SetGridCursor(row, column)
+  scrollLocalGrid(ctrl, wx.wxHORIZONTAL, x)
+  scrollLocalGrid(ctrl, wx.wxVERTICAL, y)
+  if viewport and viewport.selectedVisible and not ctrl:IsVisible(row, column, false) then
+    ctrl:MakeCellVisible(row, column)
+  end
+end
+
 local function expandLocal(row)
   if not row.children then
     local previous = type(row.previous) == "table" and row.previous or nil
@@ -273,10 +378,7 @@ local function restoreLocalSelection(ctrl, request, expanded)
   local path = {request.name, unpack(request.path)}
   local rows, selected = localRows
   for index, key in ipairs(path) do
-    local found
-    for _, row in ipairs(rows) do
-      if row.key == key then found = row break end
-    end
+    local found = findLocalChild(rows, key)
     if not found then break end
     selected = found
     if not found.expandable or (index == #path and not expanded) then break end
@@ -285,12 +387,10 @@ local function restoreLocalSelection(ctrl, request, expanded)
   end
   if not selected then return end
   renderLocalRows(ctrl)
-  for index, row in ipairs(visibleLocals) do
-    if row == selected then
-      ctrl:SetGridCursor(index - 1, VALUE_COLUMN)
-      ctrl:MakeCellVisible(index - 1, VALUE_COLUMN)
-      break
-    end
+  local index = visibleLocalIndex(selected)
+  if index then
+    ctrl:SetGridCursor(index, VALUE_COLUMN)
+    ctrl:MakeCellVisible(index, VALUE_COLUMN)
   end
 end
 
@@ -310,20 +410,23 @@ local function matchLocalsFrame(stack, previous, selected)
   end
 end
 
-local function carryLocalExpansion(stack, previous)
-  local rowsByFrame = {}
-  if previous and next(previous.rowsByFrame) then
+local function carryLocalsView(stack, previous)
+  local frames = {}
+  if previous and next(previous.frames) then
     for index, frame in ipairs(stack) do
       local matched = matchLocalsFrame(stack, previous.stack, index)
-      rowsByFrame[frame] = previous.rowsByFrame[matched]
+      frames[frame] = previous.frames[matched]
     end
   end
-  return {stack = stack, rowsByFrame = rowsByFrame}
+  return {stack = stack, frames = frames, current = previous and previous.current}
 end
 
 function debugger:renderLocals(message)
   local ctrl = self.localsCtrl
   if not ctrl then return end
+
+  local view = self.localsView
+  if view and view.current then view.current.viewport = saveLocalViewport(ctrl) end
 
   local selected = self.localsFrame or 1
   local frame = self.localsStack and self.localsStack[selected]
@@ -332,21 +435,25 @@ function debugger:renderLocals(message)
   local previousValues = previous and type(previous[2]) == "table" and previous[2] or nil
   localRows = type(values) == "table"
     and makeLocalRows(values, nil, self:GetDataOptions({maxlevel=1}), previousValues) or {}
-  if type(values) == "table" and self.localsExpansion then
-    local rowsByFrame = self.localsExpansion.rowsByFrame
-    restoreLocalExpansion(localRows, rowsByFrame[frame])
-    rowsByFrame[frame] = localRows
+  local frameView
+  if type(values) == "table" and view then
+    frameView = view.frames[frame] or {}
+    restoreLocalExpansion(localRows, frameView.rows)
+    frameView.rows = localRows
+    view.frames[frame] = frameView
   end
+  if view then view.current = frameView end
   if #localRows == 0 then
     localRows[1] = {label = message or (self.localsStack and TR("No local variables.")
       or TR("Pause execution to inspect local variables."))}
   end
   renderLocalRows(ctrl)
+  restoreLocalViewport(ctrl, frameView and frameView.viewport)
 end
 
 function debugger:resetLocals(rememberPause)
   self.previousLocalsStack = rememberPause and self.localsStack or nil
-  if not rememberPause then self.localsExpansion = nil end
+  if not rememberPause then self.localsView = nil end
   self.localsFrame = nil
   if not self.localsStack then return end
   self.localsStack = nil
@@ -368,7 +475,7 @@ function debugger:updateStackSync()
 
   local stack, _, err = debugger:stack(debugger:GetDataOptions({maxlength=false, localtypes=localsShown}))
   if not debugger.server or debugger ~= ide:GetDebugger() then return end
-  if stack then debugger.localsExpansion = carryLocalExpansion(stack, debugger.localsExpansion) end
+  if stack then debugger.localsView = carryLocalsView(stack, debugger.localsView) end
   debugger.localsStack = stack or {}
   debugger:renderLocals(err and TR("Could not read local variables."))
   if shown then
