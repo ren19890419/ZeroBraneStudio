@@ -1235,4 +1235,48 @@ return {
       },
     },
   },
+
+  -- UTF8 library
+  utf8 = {
+    type = "lib",
+    description = "This library provides basic support for UTF-8 encoding.",
+    childs = {
+      char = {
+        type = "function",
+        description = "Receives zero or more integers, converts each one to its corresponding UTF-8 byte sequence and returns a string with the concatenation of all these sequences.",
+        args = "(...)",
+        returns = "(string)",
+      },
+      charpattern = {
+        type = "function",
+        description = [[The pattern (a string, not a function) "[\0-\x7F\xC2-\xF4][\x80-\xBF]*", which matches exactly one UTF-8 byte sequence, assuming that the subject is a valid UTF-8 string.]],
+        args = "()",
+        returns = "(string)",
+      },
+      codes = {
+        type = "function",
+        description = "Returns values to iterate over in `for` loops",
+        args = "(string)",
+        returns = "(iterator)",
+      },
+      codepoint = {
+        type = "function",
+        description = "Returns the codepoints (as integers) from all characters in s that start between byte position i and j (both included).",
+        args = "(string [, i [, j]])",
+        returns = "(integers)",
+      },
+      len = {
+        type = "function",
+        description = "Returns the number of UTF-8 characters in string s that start between positions i and j (both inclusive).",
+        args = "(string [, i [, j]])",
+        returns = "(number)",
+      },
+      offset = {
+        type = "function",
+        description = "Returns the position (in bytes) where the encoding of the n-th character of s (counting from position i) starts.",
+        args = "(string [, n [, i]])",
+        returns = "(number)",
+      },
+    },
+  },
 }

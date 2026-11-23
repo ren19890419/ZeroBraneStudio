@@ -2,11 +2,23 @@ local editor = NewFile()
 ok(editor, "Open New file.")
 ok(editor.assignscache ~= nil, "Auto-complete cache is assigned.")
 
-local maxstat = 20000 -- maximum number of statements to detect looping
+local maxstat = 20000 * (jit and 1 or 2) -- maximum number of statements to detect looping
 local strategy = ide.config.acandtip.strategy
 
 for s = 2, 0, -1 do -- execute all tests for different `strategy` values
 ide.config.acandtip.strategy = s
+
+local longname = "longmorethan32charnamethatjustgoingonandonandonandon"
+for _, k in ipairs({"1", "2"}) do
+  ide.apis.lua.baselib[longname..k] = {type = "value", description = "Something long"}
+end
+ReloadAPIs()
+
+editor:SetText('')
+editor:AddText(longname)
+
+ok(pcall(function() EditorAutoComplete(editor) end),
+  ("Auto-complete (strategy=%s) doesn't fail for matches more than 32 chars long."):format(s))
 
 editor:SetText('') -- use Set/Add to position cursor after added text
 editor:AddText([[
@@ -19,6 +31,40 @@ ok(limit(maxstat, function() CreateAutoCompList(editor, "line:") end),
 
 ok(limit(maxstat, function() CreateAutoCompList(editor, "line.") end),
   ("Auto-complete (strategy=%s) doesn't loop for 'line.' after 'line:gsub'."):format(s))
+
+editor:SetText('') -- use Set/Add to position cursor after added text
+editor:AddText([[
+  local d = f:getSome()
+  local f = d:getMore()
+  f:]])
+
+ok(limit(maxstat, function() CreateAutoCompList(editor, "f:") end),
+  ("Auto-complete (strategy=%s) doesn't loop for recursive definitions (1/2)."):format(s))
+
+editor:SetText('') -- use Set/Add to position cursor after added text
+editor:AddText([[
+  local d = f:getSome()
+  local f = d[0]
+  f:]])
+
+ok(limit(maxstat, function() CreateAutoCompList(editor, "f:") end),
+  ("Auto-complete (strategy=%s) doesn't loop for recursive definitions (2/2)."):format(s))
+
+editor:SetText('') -- use Set/Add to position cursor after added text
+editor:AddText([[
+  local foo = io
+  foo:]])
+
+ok((CreateAutoCompList(editor, "foo.") or ""):find("flush") ~= nil,
+  "Auto-complete works for assigned `io` table.")
+
+editor:SetText('') -- use Set/Add to position cursor after added text
+editor:AddText([[
+  local foo = assert(io)
+  foo:]])
+
+ok((CreateAutoCompList(editor, "foo.") or ""):find("flush") ~= nil,
+  "Auto-complete works for assignment wrapped into `assert()` call.")
 
 editor:SetText('') -- use Set/Add to position cursor after added text
 editor:AddText([[
@@ -89,13 +135,14 @@ editor:AddText([[
 ok(limitdepth(1000, function() EditorAutoComplete(editor) end),
   ("Auto-complete (strategy=%s) doesn't loop for classes that self-reference with 'valuetype'."):format(s))
 
--- restore valuetype
+-- restore values
+for _, k in ipairs({"1", "2"}) do ide.apis.lua.baselib[longname..k] = nil end
 ide.apis.lua.baselib.io.valuetype = nil
 ReloadAPIs()
 
 editor:SetText('')
 editor:AddText('local error = true\n')
-IndicateAll(editor)
+editor:IndicateSymbols()
 
 local ac = CreateAutoCompList(editor, "err")
 local _, c = ac:gsub("error", "error")
@@ -140,7 +187,7 @@ ok(not (CreateAutoCompList(editor, "pri.") or ""):match('print'),
 
 editor:SetText('')
 editor:AddText('local name = "abc"; local namelen = #name')
-IndicateAll(editor)
+editor:IndicateSymbols()
 EditorAutoComplete(editor)
 local isactive = editor:AutoCompActive()
 editor:AutoCompCancel() -- cleanup
@@ -172,7 +219,7 @@ ok((CreateAutoCompList(editor, "foo:") or ""):match('byte'),
 
 editor:SetText('')
 editor:AddText('local value\nprint(va')
-IndicateAll(editor)
+editor:IndicateSymbols()
 
 local status, res = pcall(CreateAutoCompList, editor, "va")
 ok(status and (res or ""):match('value'),
@@ -187,7 +234,42 @@ ok(status and (res or ""):match('value'),
 
 end
 
+editor:SetText('lsqlite3.db:execute( lsqlite3.dm.')
+local status = pcall(editor.IndicateSymbols, editor)
+ok(status, "IndicateSymbols doesn't fail on invalid code.")
+
+local symbols = ide.config.acandtip.symbols
+ide.config.acandtip.symbols = 2
+
+editor:SetText('')
+editor:AddText('local value,velAcc\nprint(va')
+editor:IndicateSymbols()
+
+local status, res = pcall(CreateAutoCompList, editor, "va")
+ok(status and (res or ""):match('velAcc'),
+  ("Auto-complete (symbols=%s) offers case-insensitive completions for mixed case match.")
+    :format(ide.config.acandtip.symbols))
+ok(status and (res or ""):match('value'),
+  ("Auto-complete (symbols=%s) offers case-insensitive completions for lower case match.")
+    :format(ide.config.acandtip.symbols))
+
+local status, res = pcall(CreateAutoCompList, editor, "vA")
+ok(status and (res or ""):match('velAcc'),
+  ("Auto-complete (symbols=%s) offers case-sensitive completions for upper case match (1/2).")
+    :format(ide.config.acandtip.symbols))
+ok(status and res and not res:match('value'),
+  ("Auto-complete (symbols=%s) offers case-sensitive completions for upper case match (2/2).")
+    :format(ide.config.acandtip.symbols))
+
 -- cleanup
 ide.config.acandtip.strategy = strategy
+ide.config.acandtip.symbols = symbols
 ide:GetDocument(editor):SetModified(false)
+
+-- this provides a workaround for the macOS crash (https://trac.wxwidgets.org/ticket/18434)
+if ide.wxver >= "3.1.3" then
+  editor:AutoCompCancel()
+  wx.wxSafeYield()
+end
+
 ClosePage()

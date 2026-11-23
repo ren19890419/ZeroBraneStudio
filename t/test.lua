@@ -4,7 +4,6 @@ local env = {}
 G.setmetatable(env, {__index = G})
 
 local pkg = package {
-  onIdleOnce = function() G.ide:GetOutput():GotoLine(G.ide:GetOutput():GetLineCount()-1) end,
   onAppShutdown = function()
     local ini = G.ide.config.ini
     if ini then G.FileRemove(ini) end
@@ -39,7 +38,7 @@ local function runtests()
   end
 
   -- find all test files and load them
-  local files = FileSysGetRecursive("t", true, "*.lua")
+  local files = ide:GetFileList("t", true, "*.lua")
   for k = #files, 1, -1 do
     if files[k]:find("[/\\]test%.lua$") then table.remove(files, k) end
   end
@@ -67,11 +66,12 @@ local function runtests()
 end
 
 pkg.onAppLoad = function()
-  local start = G.TimeGet()
+  local start = ide:GetTime()
   G.setfenv(runtests, env)
   G.print = function(s, ...)
-    G.DisplayOutput(s, ...)
-    G.DisplayOutputLn(s:match("ok %d") and (" -- %.3fs"):format(G.TimeGet()-start) or "")
+    G.ide:GetOutput():Write(s, ...)
+    G.ide:Print(s:match("ok %d") and (" -- %.3fs"):format(ide:GetTime()-start) or "")
   end
   runtests()
+  G.ide:GetOutput():GotoLine(G.ide:GetOutput():GetLineCount()-1)
 end

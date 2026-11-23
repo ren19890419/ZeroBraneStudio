@@ -1,4 +1,4 @@
--- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-18 Paul Kulchenko, ZeroBrane LLC
 
 local ide = ide
 
@@ -103,6 +103,7 @@ ide.config.keymap = {
   [ID.BREAKPOINTNEXT]   = "F9",
   [ID.BREAKPOINTPREV]   = "Shift-F9",
   [ID.CLEAROUTPUT]      = "",
+  [ID.CLEAROUTPUTENABLE] = "",
   [ID.INTERPRETER]      = "",
   [ID.PROJECTDIR]       = "",
 -- Help menu
@@ -112,8 +113,12 @@ ide.config.keymap = {
   [ID.EDITWATCH]        = "F2",
   [ID.DELETEWATCH]      = "Del",
 -- Editor popup menu items
+  [ID.GOTODEFINITION]   = "",
+  [ID.RENAMEALLINSTANCES] = "",
+  [ID.REPLACEALLSELECTIONS] = "",
   [ID.QUICKADDWATCH]    = "",
   [ID.QUICKEVAL]        = "",
+  [ID.ADDTOSCRATCHPAD]  = "",
 -- Filetree popup menu items
   [ID.RENAMEFILE]       = "F2",
   [ID.DELETEFILE]       = "Del",
@@ -127,6 +132,13 @@ function KSC(id, default)
   -- to ide.config.keymap.
   local keymap = ide.config.keymap
   return (keymap[id] and "\t"..keymap[id]) or (default and "\t"..default) or ""
+end
+
+function TSC(id) -- shortcut converted to system-dependent text
+  local osx = ide.osname == "Macintosh"
+  local shortcut = KSC(id):gsub("\t","")
+  -- replace Ctrl with Cmd, but not in RawCtrl
+  return shortcut and #shortcut > 0 and shortcut:gsub("%f[%w]Ctrl", osx and "Cmd" or "Ctrl") or ""
 end
 
 ide.config.editor.keymap = {

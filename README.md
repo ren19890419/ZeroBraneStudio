@@ -6,6 +6,7 @@ and debugging support for various Lua engines
 ([Lua 5.1](http://studio.zerobrane.com/doc-lua-debugging),
 [Lua 5.2](http://studio.zerobrane.com/doc-lua52-debugging),
 [Lua 5.3](http://studio.zerobrane.com/doc-lua53-debugging),
+[Lua 5.4](http://studio.zerobrane.com/doc-lua54-debugging),
 [LuaJIT](http://studio.zerobrane.com/doc-luajit-debugging),
 [LÖVE](http://notebook.kulchenko.com/zerobrane/love2d-debugging),
 [Moai](http://notebook.kulchenko.com/zerobrane/moai-debugging-with-zerobrane-studio),
@@ -26,9 +27,9 @@ and others).
 
 ## Features
 
-* Small, portable, and **cross-platform** (Windows, Mac OSX, and Linux).
+* Small, portable, and **cross-platform** (Windows, macOS, and Linux).
 * Written in Lua and is extensible with Lua packages.
-* **Syntax highlighting** and folding for 110+ languages and file formats.
+* **Syntax highlighting** and folding for 125+ languages and file formats.
 * **Project view** with auto-refresh and ability to hide files and directories from the list.
 * Bundled with several of **the most popular Lua modules**
 ([luasocket](https://github.com/diegonehab/luasocket),
@@ -42,6 +43,7 @@ compiled for all supported Lua versions.
 for [Lua 5.1](http://studio.zerobrane.com/doc-lua-debugging),
 [Lua 5.2](http://studio.zerobrane.com/doc-lua52-debugging),
 [Lua 5.3](http://studio.zerobrane.com/doc-lua53-debugging),
+[Lua 5.4](http://studio.zerobrane.com/doc-lua54-debugging),
 [LuaJIT](http://studio.zerobrane.com/doc-luajit-debugging),
 and [other Lua engines](http://studio.zerobrane.com/documentation#debugging).
 * **Interactive console** to directly test code snippets with local and remote execution.
@@ -61,11 +63,7 @@ GSL-shell, and other engines.
 * Several **ways to extend** the current functionality:
   - packages (`packages/`): [plugins](http://studio.zerobrane.com/doc-plugin) that provide additional functionality;
   - translations (`cfg/i18n/`): [translations](http://studio.zerobrane.com/doc-translation) of the menus and messages to other languages;
-  - user configuration (`cfg/`): settings for various components, styles, color themes, and other preferences;
-  - apis (`api/`): descriptions for [code completion and tooltips](http://studio.zerobrane.com/doc-api-auto-complete);
-  - interpreters (`interpreters/`): components for setting debugging and run-time project environment;
-  - specs (`spec/`): specifications for file syntax, lexer, and keywords;
-  - tools (`tools/`): additional tools.
+  - user configuration (`cfg/`): settings for various components, styles, color themes, and other preferences.
 
 ## Documentation
 
@@ -79,12 +77,12 @@ GSL-shell, and other engines.
 The IDE can be **installed into and run from any directory**. There are three options to install it:
 
 * Download [installation package for the latest release](https://studio.zerobrane.com/) for individual platforms (Windows, OSX, or Linux);
-* Download [snapshot of the repository for each of the releases](releases), which works for all platforms;
+* Download [snapshot of the repository for each of the releases](https://github.com/pkulchenko/ZeroBraneStudio/releases), which works for all platforms;
 * Clone the repository to access the current development version; this option also works for all platforms.
 
 **No compilation is needed** for any of the installation options, although the scripts to compile required libraries for all supported platforms are available in the `build/` directory.
 
-See the [installation section](https://studio.zerobrane.com/doc-installation) in the documentation for further details.
+See the [installation section](https://studio.zerobrane.com/doc-installation) in the documentation for further details and uninstallation instructions.
 
 ## Usage
 
@@ -92,14 +90,14 @@ The IDE can be launched by using the `zbstudio` command with slight variations d
 
 * **Windows**: Run `zbstudio` from the directory that the IDE is installed to or create a shortcut pointing to `zbstudio.exe`.
 * **Linux**: Run `zbstudio` when installed from the package installation or run `./zbstudio.sh` when using a snapshot/clone of the repository.
-* **Mac OSX**: Launch the `ZeroBrane Studio` application if installed or run `./zbstudio.sh` when using a snapshot/clone of the repository.
+* **macOS**: Launch the `ZeroBrane Studio` application if installed or run `./zbstudio.sh` when using a snapshot/clone of the repository.
 
 The general command for launching is the following: `zbstudio [option] [<project directory>] [<filename>...]`.
 
 * **Open files**: `zbstudio <filename> [<filename>...]`.
 * **Set project directory** (and optionally open files): `zbstudio <project directory> [<filename>...]`.
 * **Overwrite default configuration**: `zbstudio -cfg "string with configuration settings"`, for example: `zbstudio -cfg "editor.fontsize=12; editor.usetabs=true"`.
-* **Load custom configuration file**: `zbstudio -cfg <filename>`, for example: `zbstudio -cfg cfg/estrela.lua`.
+* **Load custom configuration file**: `zbstudio -cfg <filename>`, for example: `zbstudio -cfg cfg/xcode-keys.lua`.
 
 All configuration changes applied from the command line are only effective for the current session.
 

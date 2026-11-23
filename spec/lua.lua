@@ -1,6 +1,7 @@
 -- authors: Luxinia Dev (Eike Decker & Christoph Kubisch)
 ---------------------------------------------------------
 
+local unpack = table.unpack or unpack
 local funcdef = "([A-Za-z_][A-Za-z0-9_%.%:]*)%s*"
 local decindent = {
   ['else'] = true, ['elseif'] = true, ['until'] = true, ['end'] = true}
@@ -25,6 +26,9 @@ local function isfndef(str)
   return s,e,cap,l
 end
 local q = EscapeMagic
+
+local PARSE = require 'lua_parser_loose'
+local LEX = require 'lua_lexer_loose'
 
 local function ldoc(tx, typepatt)
   local varname = "([%w_]+)"
@@ -77,48 +81,48 @@ return {
   end,
   isincindent = function(str)
     -- remove "long" comments and escaped slashes (to process \' and \" below)
-    str = str:gsub('%-%-%[=*%[.-%]=*%]',''):gsub('\\[\\\'"]','')
+    str = str:gsub('%-%-%[=*%[.-%]=*%]',' '):gsub('\\[\\\'"]','')
     while true do
       local num, sep = nil, str:match("['\"]")
       if not sep then break end
-      str, num = str:gsub(sep..".-\\"..sep,sep):gsub(sep..".-"..sep,"")
+      str, num = str:gsub(sep..".-\\"..sep,sep):gsub(sep..".-"..sep," ")
       if num == 0 then break end
     end
     str = (str
-      :gsub('%[=*%[.-%]=*%]','') -- remove long strings
-      :gsub("%b[]","") -- remove all table indexes
+      :gsub('%[=*%[.-%]=*%]',' ') -- remove long strings
+      :gsub('%b[]',' ') -- remove all table indexes
       :gsub('%[=*%[.*',''):gsub('.*%]=*%]','') -- remove partial long strings
       :gsub('%-%-.*','') -- strip comments after strings are processed
       :gsub("%b()","()") -- remove all function calls
     )
 
-    local func = (isfndef(str) or str:match("%W+function%s*%(")) and 1 or 0
+    local func = (isfndef(str) or str:match("%f[%w_]function%s*%(")) and 1 or 0
     local term = str:match("^%s*([%w_]+)%W*")
     local terminc = term and incindent[term] and 1 or 0
     -- fix 'if' not terminated with 'then'
     -- or 'then' not started with 'if'
     if (term == 'if' or term == 'elseif') and not str:match("%f[%w_]then%f[^%w_]")
-    or (term == 'for') and not str:match("%S%s+do%f[^%w_]")
+    or (term == 'for') and not str:match("%f[%w_]do%f[^%w_]")
     or (term == 'while') and not str:match("%f[%w_]do%f[^%w_]")
+    -- or `repeat ... until` are on the same line
+    or (term == 'repeat') and str:match("%f[%w_]until%f[^%w_]")
     -- if this is a function definition, then don't increment the level
     or func == 1 then
       terminc = 0
     elseif not (term == 'if' or term == 'elseif') and str:match("%f[%w_]then%f[^%w_]")
-    or not (term == 'for') and str:match("%S%s+do%f[^%w_]")
+    or not (term == 'for') and str:match("%f[%w_]do%f[^%w_]")
     or not (term == 'while') and str:match("%f[%w_]do%f[^%w_]") then
       terminc = 1
     end
     local _, opened = str:gsub("([%{%(])", "%1")
     local _, closed = str:gsub("([%}%)])", "%1")
     -- ended should only be used to negate term and func effects
-    local anon = str:match("%W+function%s*%(.+[^%w_]end%f[^%w_]")
+    local anon = str:match("%f[%w_]function%s*%(.+[^%w_]end%f[^%w_]")
     local ended = (terminc + func > 0) and (str:match("[^%w_]+end%s*$") or anon) and 1 or 0
 
     return opened - closed + func + terminc - ended
   end,
   marksymbols = function(code, pos, vars)
-    local PARSE = require 'lua_parser_loose'
-    local LEX = require 'lua_lexer_loose'
     local lx = LEX.lexc(code, nil, pos)
     return coroutine.wrap(function()
       local varnext = {}
@@ -173,6 +177,8 @@ return {
         local var,typ = tx:match("%s*"..identifier.."%s*=%s*([^;]+)")
 
         var = var and var:gsub("local",""):gsub("%s","")
+        -- remove assert() calls as they don't affect their parameter types
+        typ = typ and typ:gsub("assert%s*(%b())", function(s) return s:gsub("^%(",""):gsub("%)$","") end)
         -- handle `require` as a special case that returns a type that matches its parameter
         -- (this is without deeper analysis on loaded files and should work most of the time)
         local req = typ and typ:match("^require%s*%(?%s*['\"](.+)['\"]%s*%)?")
@@ -205,7 +211,10 @@ return {
         end
 
         if (var and typ) then
-          local class,func = typ:match(varname.."["..q(sep).."]"..varname)
+          -- expand known types
+          local tbl, rest = typ:match("^(.+)(["..sep.."][^"..sep.."]+)$")
+          if tbl and assigns[tbl] then typ = assigns[tbl]..rest end
+
           if (assigns[typ] and not req) then
             assigns[var] = assigns[typ]
           else
@@ -278,7 +287,8 @@ return {
       string.byte string.char string.dump string.find string.format string.gmatch string.gsub string.len
       string.lower string.match string.rep string.reverse string.sub string.upper
       byte find format gmatch gsub len lower match rep reverse sub upper
-      table.move, string.pack, string.unpack, string.packsize
+      utf8.char utf8.charpattern utf8.codes utf8.codepoint utf8.len utf8.offset
+      table.move string.pack string.unpack string.packsize
       table.concat table.insert table.maxn table.pack table.remove table.sort table.unpack]]
   },
 }

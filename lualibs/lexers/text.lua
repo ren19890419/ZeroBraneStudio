@@ -1,6 +1,10 @@
--- Copyright 2006-2016 Mitchell mitchell.att.foicica.com. See LICENSE.
+-- Copyright 2006-2020 Mitchell. See LICENSE.
 -- Text LPeg lexer.
 
-local M = {_NAME = 'text'}
+local lexer = require('lexer')
 
-return M
+local lex = lexer.new('text')
+
+lex:add_rule('whitespace', lexer.token(lexer.WHITESPACE, lexer.space^1))
+
+return lex

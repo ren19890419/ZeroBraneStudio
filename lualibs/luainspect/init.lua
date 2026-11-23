@@ -298,7 +298,7 @@ function M.related_keywords(ast, top_ast, tokenlist, src)
   end
 
   --  keywords in statement/block.
-  if iskeystat[ast.tag] then
+  if ast and iskeystat[ast.tag] then
     local keywords = {}
     for i=1,#tokenlist do
      local token = tokenlist[i]
@@ -684,8 +684,9 @@ function M.infer_values(top_ast, tokenlist, src, report)
             if not ok then var_ast.value = T.error(var_ast.value) end
               --FIX: propagate to localdefinition?
           end
-        else
-          assert(var_ast.tag == 'Id', var_ast.tag)
+        -- explicitly check if the tag is present here, as the analysis
+        -- may be running on syntactically incorrect code, which may then fail
+        elseif var_ast.tag == 'Id' then
           if var_ast.localdefinition then
             set_value(var_ast, value)
           else -- global
@@ -719,7 +720,7 @@ function M.infer_values(top_ast, tokenlist, src, report)
         local t_ast = iter_ast[1][2]
         local value = T.universal
         local key
-        if t_ast.value and (known(t_ast.value) or T.istabletype[t_ast.value]) then
+        if t_ast.value and T.istabletype[t_ast.value] then
           key = next(t_ast.value)
           local ok; ok, value = pzcall(tindex, {t_ast, {tag='String', key}}, t_ast.value, key)
           if not ok then value = T.error(t_ast.value) end

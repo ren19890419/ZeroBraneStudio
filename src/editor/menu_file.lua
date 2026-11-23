@@ -6,7 +6,6 @@
 local ide = ide
 local frame = ide.frame
 local menuBar = frame.menuBar
-local openDocuments = ide.openDocuments
 
 local filehistorymenu = ide:MakeMenu {
   { },
@@ -44,9 +43,7 @@ do -- recent file history
   local function addFileHistory(filename)
     -- a new (empty) tab is opened; don't change the history
     if not filename then return end
-
-    local fn = wx.wxFileName(filename)
-    if fn:Normalize() then filename = fn:GetFullPath() end
+    filename = FileNormalizePath(filename)
 
     local index = filehistory[0]
 
@@ -76,9 +73,7 @@ do -- recent file history
 
   local function remFileHistory(filename)
     if not filename then return end
-
-    local fn = wx.wxFileName(filename)
-    if fn:Normalize() then filename = fn:GetFullPath() end
+    filename = FileNormalizePath(filename)
 
     local index = filehistory[0]
 
@@ -106,7 +101,7 @@ do -- recent file history
   local function loadRecent(event)
     local id = event:GetId()
     local item = filehistorymenu:FindItem(id)
-    local filename = item:GetLabel()
+    local filename = item:GetItemLabelText()
     local index = filehistory[0]
     filehistory[0] = (
       (index > 1 and id == ID("file.recentfiles."..(index-1)) and index-1) or
@@ -179,24 +174,24 @@ frame:Connect(ID_NEW, wx.wxEVT_COMMAND_MENU_SELECTED, function() return NewFile(
 frame:Connect(ID_OPEN, wx.wxEVT_COMMAND_MENU_SELECTED, OpenFile)
 frame:Connect(ID_SAVE, wx.wxEVT_COMMAND_MENU_SELECTED,
   function ()
-    local editor = ide.findReplace:CanSave(GetEditorWithFocus()) or GetEditor()
+    local editor = ide.findReplace:CanSave(ide:GetEditorWithFocus()) or ide:GetEditor()
     local doc = ide:GetDocument(editor)
     SaveFile(editor, doc and doc:GetFilePath() or nil)
   end)
 frame:Connect(ID_SAVE, wx.wxEVT_UPDATE_UI,
   function (event)
-    local doc = ide:GetDocument(GetEditor())
-    event:Enable(ide.findReplace:CanSave(GetEditorWithFocus()) and true
+    local doc = ide:GetDocument(ide:GetEditor())
+    event:Enable(ide.findReplace:CanSave(ide:GetEditorWithFocus()) and true
       or doc and (doc:IsModified() or doc:IsNew()) or false)
   end)
 
 frame:Connect(ID_SAVEAS, wx.wxEVT_COMMAND_MENU_SELECTED,
   function ()
-    SaveFileAs(GetEditor())
+    SaveFileAs(ide:GetEditor())
   end)
 frame:Connect(ID_SAVEAS, wx.wxEVT_UPDATE_UI,
   function (event)
-    event:Enable(GetEditor() ~= nil)
+    event:Enable(ide:GetEditor() ~= nil)
   end)
 
 frame:Connect(ID_SAVEALL, wx.wxEVT_COMMAND_MENU_SELECTED,
@@ -206,8 +201,8 @@ frame:Connect(ID_SAVEALL, wx.wxEVT_COMMAND_MENU_SELECTED,
 frame:Connect(ID_SAVEALL, wx.wxEVT_UPDATE_UI,
   function (event)
     local atLeastOneModifiedDocument = false
-    for _, document in pairs(openDocuments) do
-      if document.isModified or not document.filePath then
+    for _, document in pairs(ide:GetDocuments()) do
+      if document:IsModified() or document:IsNew() then
         atLeastOneModifiedDocument = true
         break
       end
@@ -217,24 +212,28 @@ frame:Connect(ID_SAVEALL, wx.wxEVT_UPDATE_UI,
 
 frame:Connect(ID_CLOSE, wx.wxEVT_COMMAND_MENU_SELECTED,
   function (event)
-    local editor = GetEditorWithFocus()
+    local editor = ide:GetEditorWithFocus()
     local nb = ide:GetOutputNotebook()
     local index = editor and nb:GetPageIndex(editor)
     if index and ide.findReplace:IsPreview(editor) and index >= 0 then
       nb:DeletePage(index) -- close preview tab
     else
-      ClosePage() -- this will find the current editor tab
+      local doc = ide:GetDocument(ide:GetEditor())
+      if doc then doc:Close() end
     end
   end)
 frame:Connect(ID_CLOSE, wx.wxEVT_UPDATE_UI,
   function (event)
-    event:Enable(ide.findReplace:IsPreview(GetEditorWithFocus()) or GetEditor() ~= nil)
+    event:Enable(ide.findReplace:IsPreview(ide:GetEditorWithFocus()) or ide:GetEditor() ~= nil)
   end)
 
 frame:Connect(ID_EXIT, wx.wxEVT_COMMAND_MENU_SELECTED,
   function (event)
     frame:Close() -- this will trigger wxEVT_CLOSE_WINDOW
   end)
+
+frame:Connect(ID_RESTART, wx.wxEVT_COMMAND_MENU_SELECTED,
+  function (event) ide:Restart(true) end)
 
 frame:Connect(ID_RECENTPROJECTSCLEAR, wx.wxEVT_COMMAND_MENU_SELECTED,
   function (event) FileTreeProjectListClear() end)

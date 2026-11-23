@@ -1,4 +1,4 @@
--- Copyright 2011-17 Paul Kulchenko, ZeroBrane LLC
+-- Copyright 2011-18 Paul Kulchenko, ZeroBrane LLC
 -- authors: Luxinia Dev (Eike Decker & Christoph Kubisch)
 ---------------------------------------------------------
 
@@ -11,6 +11,7 @@ ide.filetree = {
   projtreeCtrl = nil,
   imglist = ide:CreateImageList("PROJECT",
     "FOLDER", "FOLDER-MAPPED", "FILE-NORMAL", "FILE-NORMAL-START",
+    -- "file known" needs to be the last one as dynamic types can be added after it
     "FILE-KNOWN"),
   settings = {extensionignore = {}, startfile = {}, mapped = {}},
   extmap = {},
@@ -24,41 +25,15 @@ local image = { -- the order of ids has to match the order in the ImageList
   FILEKNOWN = 4,
 }
 
-local clearbmp = ide:GetBitmap("FILE-NORMAL-CLR", "PROJECT", wx.wxSize(16,16))
-local function str2rgb(str)
-  local a = ('a'):byte()
-  -- `red`/`blue` are more prominent colors; use them for the first two letters; suppress `green`
-  local r = (((str:sub(1,1):lower():byte() or a)-a) % 27)/27
-  local b = (((str:sub(2,2):lower():byte() or a)-a) % 27)/27
-  local g = (((str:sub(3,3):lower():byte() or a)-a) % 27)/27/3
-  local ratio = 256/(r + g + b + 1e-6)
-  return {math.floor(r*ratio), math.floor(g*ratio), math.floor(b*ratio)}
-end
-local function createImg(ext)
-  local iconmap = ide.config.filetree.iconmap
-  local color = type(iconmap)=="table" and type(iconmap[ext])=="table" and iconmap[ext].fg
-  local bitmap = wx.wxBitmap(16, 16)
-  local font = wx.wxFont(ide.font.eNormal)
-  font:SetPointSize(ide.osname == "Macintosh" and 6 or 5)
-  local mdc = wx.wxMemoryDC()
-  mdc:SelectObject(bitmap)
-  mdc:SetFont(font)
-  mdc:DrawBitmap(clearbmp, 0, 0, true)
-  mdc:SetTextForeground(wx.wxColour(unpack(type(color)=="table" and color or str2rgb(ext))))
-  mdc:DrawText(ext:sub(1,3), 2, 5) -- take first three letters only
-  mdc:SelectObject(wx.wxNullBitmap)
-  return bitmap
-end
-
 local function getIcon(name, isdir)
-  local startfile = GetFullPathIfExists(FileTreeGetDir(),
-    filetree.settings.startfile[FileTreeGetDir()])
+  local project = ide:GetProject()
+  local startfile = GetFullPathIfExists(project, filetree.settings.startfile[project])
   local ext = GetFileExt(name)
   local extmap = ide.filetree.extmap
   local known = extmap[ext] or ide:FindSpec(ext)
   if known and not extmap[ext] then
     local iconmap = ide.config.filetree.iconmap
-    extmap[ext] = iconmap and ide.filetree.imglist:Add(createImg(ext)) or image.FILEKNOWN
+    extmap[ext] = iconmap and ide.filetree.imglist:Add(ide:CreateFileIcon(ext)) or image.FILEKNOWN
   end
   local icon = isdir and image.DIRECTORY or known and extmap[ext] or image.FILEOTHER
   if startfile and startfile == name then icon = image.FILEOTHERSTART end
@@ -75,10 +50,13 @@ local function treeAddDir(tree,parent_id,rootdir)
 
   local cache = {}
   local curr
-  local files = FileSysGetRecursive(rootdir)
+  local files = ide:GetFileList(rootdir)
   local dirmapped = {}
-  if tree:IsRoot(parent_id) then
-    local mapped = filetree.settings.mapped[FileTreeGetDir()] or {}
+  local projpath = ide:GetProject()
+  local ishoisted = tree:IsDirHoisted(parent_id)
+  -- if this is a root, but not hoisted folder
+  if tree:IsRoot(parent_id) and not ishoisted then
+    local mapped = filetree.settings.mapped[projpath] or {}
     table.sort(mapped)
     -- insert into files at the sorted order
     for i, v in ipairs(mapped) do
@@ -94,26 +72,31 @@ local function treeAddDir(tree,parent_id,rootdir)
       local icon = getIcon(file, isdir)
 
       -- keep full name for the mapped directories
-      if dirmapped[file] then name, icon = file, image.DIRECTORYMAPPED end
+      if dirmapped[file] then
+        name = file:gsub(q(projpath), ""):gsub(pathsep.."$","")
+        icon = image.DIRECTORYMAPPED
+      end
 
       local item = items[name .. icon]
       if item then -- existing item
         -- keep deleting items until we find item
         while true do
-          local next = (curr
+          local nextitem = (curr
             and tree:GetNextSibling(curr)
             or tree:GetFirstChild(parent_id))
-          if not next:IsOk() or name == tree:GetItemText(next) then
-            curr = next
+          if not nextitem:IsOk() or name == tree:GetItemText(nextitem) then
+            curr = nextitem
             break
           end
-          tree:Delete(next)
+          PackageEventHandle("onFiletreeFileRemove", tree, nextitem, tree:GetItemFullName(nextitem))
+          tree:Delete(nextitem)
         end
       else -- new item
         curr = (curr
           and tree:InsertItem(parent_id, curr, name, icon)
           or tree:PrependItem(parent_id, name, icon))
         if isdir then tree:SetItemHasChildren(curr, FileDirHasContent(file)) end
+        PackageEventHandle("onFiletreeFileAdd", tree, curr, file)
       end
       if curr:IsOk() then cache[iscaseinsensitive and name:lower() or name] = curr end
     end
@@ -121,32 +104,39 @@ local function treeAddDir(tree,parent_id,rootdir)
 
   -- delete any leftovers (something that exists in the tree, but not on disk)
   while true do
-    local next = (curr
+    local nextitem = (curr
       and tree:GetNextSibling(curr)
       or tree:GetFirstChild(parent_id))
-    if not next:IsOk() then break end
-    tree:Delete(next)
+    if not nextitem:IsOk() then break end
+    PackageEventHandle("onFiletreeFileRemove", tree, nextitem, tree:GetItemFullName(nextitem))
+    tree:Delete(nextitem)
   end
 
   -- cache the mapping from names to tree items
   if ide.wxver >= "2.9.5" then
-    local data = wx.wxLuaTreeItemData()
+    local data = tree:GetItemData(parent_id) or wx.wxLuaTreeItemData()
     data:SetData(cache)
     tree:SetItemData(parent_id, data)
   end
 
   tree:SetItemHasChildren(parent_id,
     tree:GetChildrenCount(parent_id, false) > 0)
+
+  PackageEventHandle("onFiletreeFileRefresh", tree, parent_id, tree:GetItemFullName(parent_id))
 end
 
 local function treeSetRoot(tree,rootdir)
   if not ide:IsValidCtrl(tree) then return end
-  tree:DeleteAllItems()
   if not wx.wxDirExists(rootdir) then return end
+  tree:DeleteAllItems()
 
   local root_id = tree:AddRoot(rootdir, image.DIRECTORY)
   tree:SetItemHasChildren(root_id, true) -- make sure that the item can expand
   tree:Expand(root_id) -- this will also populate the tree
+
+  -- sync with the current editor window and activate selected file
+  local editor = ide:GetEditor()
+  if editor then FileTreeMarkSelected(ide:GetDocument(editor):GetFilePath()) end
 end
 
 local function findItem(tree, match)
@@ -194,11 +184,21 @@ local function treeSetConnectorsAndIcons(tree)
 
   function tree:IsDirectory(item_id) return isIt(item_id, image.DIRECTORY) end
   function tree:IsDirMapped(item_id) return isIt(item_id, image.DIRECTORYMAPPED) end
+  function tree:IsDirHoisted(item_id)
+    return (self:IsRoot(item_id) and
+      not ide:IsSameDirectoryPath(ide:GetProject(), self:GetItemFullName(item_id)))
+  end
   -- "file known" is a special case as it includes file types registered dynamically
   function tree:IsFileKnown(item_id) return tree:GetItemImage(item_id) >= image.FILEKNOWN end
   function tree:IsFileOther(item_id) return isIt(item_id, image.FILEOTHER) end
   function tree:IsFileStart(item_id) return isIt(item_id, image.FILEOTHERSTART) end
   function tree:IsRoot(item_id) return not tree:GetItemParent(item_id):IsOk() end
+
+  function tree:GetFileImage(name) return getIcon(name, false) end
+
+  local function saveSettings()
+    ide:GetPackage('core.filetree'):SetSettings(filetree.settings)
+  end
 
   function tree:FindItem(match)
     return findItem(self, (wx.wxIsAbsolutePath(match) or match == '') and match
@@ -217,9 +217,7 @@ local function treeSetConnectorsAndIcons(tree)
       if cur and #cur > 0 then str = MergeFullPath(cur, str) end
     end
     -- as root may already include path separator, normalize the path
-    local fullPath = wx.wxFileName(str)
-    fullPath:Normalize()
-    return fullPath:GetFullPath()
+    return FileNormalizePath(str)
   end
 
   function tree:RefreshChildren(node)
@@ -261,46 +259,61 @@ local function treeSetConnectorsAndIcons(tree)
         tree:Toggle(item_id)
       else refreshAncestors(tree:GetItemParent(item_id)) end -- stale content
     else -- open file
-      if wx.wxFileExists(name) then LoadFile(name,nil,true)
+      -- delay activation to keep the focus on the editor,
+      -- as doubleclick sends it back to the tree on Windows.
+      if wx.wxFileExists(name) then ide:DoWhenIdle(function() LoadFile(name,nil,true) end)
       else refreshAncestors(tree:GetItemParent(item_id)) end -- stale content
     end
   end
 
-  local function unMapDir(dir)
-    local project = FileTreeGetDir()
+  function tree:UnmapDirectory(path)
+    local project = ide:GetProject()
+    if not project then return nil, "Project is not set" end
+
+    local dir = wx.wxFileName.DirName(ide:MergePath(project, path))
     local mapped = filetree.settings.mapped[project] or {}
-    for k, m in ipairs(mapped) do
-      if m == dir then table.remove(mapped, k) end
+    for k = #mapped,1,-1 do
+      if dir:SameAs(wx.wxFileName.DirName(mapped[k])) then table.remove(mapped, k) end
     end
     filetree.settings.mapped[project] = #mapped > 0 and mapped or nil
-    refreshAncestors(tree:GetRootItem())
+    saveSettings()
+    refreshAncestors(self:GetRootItem())
+    return true
   end
-  local function mapDir()
-    local project = FileTreeGetDir()
-    local dirPicker = wx.wxDirDialog(ide.frame, TR("Choose a directory to map"),
-      project ~= "" and project or wx.wxGetCwd(), wx.wxDIRP_DIR_MUST_EXIST)
-    if dirPicker:ShowModal(true) ~= wx.wxID_OK then return end
-    local dir = wx.wxFileName.DirName(FixDir(dirPicker:GetPath()))
-    local path = dir:GetFullPath()
+  function tree:MapDirectory(path)
+    local project = ide:GetProject()
+    if not project then return nil, "Project is not set" end
 
-    -- don't remap the project directory
-    if dir:SameAs(wx.wxFileName(project)) then return end
+    if not path then
+      local dirPicker = wx.wxDirDialog(ide.frame, TR("Choose a directory to map"),
+        project ~= "" and project or wx.wxGetCwd(), wx.wxDIRP_DIR_MUST_EXIST)
+      if dirPicker:ShowModal(true) ~= wx.wxID_OK then return end
+      local dir = wx.wxFileName.DirName(FixDir(dirPicker:GetPath()))
+      -- don't remap the project directory
+      if dir:SameAs(wx.wxFileName.DirName(project)) then return end
+      path = dir:GetFullPath()
+    end
+
+    local dir = wx.wxFileName.DirName(ide:MergePath(project, path))
+    if not dir:DirExists() then return nil, "Directory doesn't exist" end
 
     local mapped = filetree.settings.mapped[project] or {}
     for _, m in ipairs(mapped) do
-      if m == path then return end -- already on the list
+      if dir:SameAs(wx.wxFileName.DirName(m)) then return end -- already on the list
     end
-    table.insert(mapped, path)
+    -- add to the list; the path includes trailing separator used for directory detection
+    table.insert(mapped, dir:GetFullPath())
     filetree.settings.mapped[project] = mapped
-    refreshAncestors(tree:GetRootItem())
+    saveSettings()
+    refreshAncestors(self:GetRootItem())
+    return true
   end
 
   local empty = ""
   local function renameItem(itemsrc, target)
-    local cache = type(itemsrc) == 'table' and itemsrc or nil
-    local isdir = not cache and tree:IsDirectory(itemsrc) or cache and cache.isdir or false
-    local isnew = not cache and tree:GetItemText(itemsrc) == empty or cache and cache.isnew or false
-    local source = cache and cache.fullname or tree:GetItemFullName(itemsrc)
+    local isdir = tree:IsDirectory(itemsrc)
+    local isnew = tree:GetItemText(itemsrc) == empty
+    local source = tree:GetItemFullName(itemsrc)
     local fn = wx.wxFileName(target)
 
     -- check if the target is the same as the source;
@@ -308,88 +321,118 @@ local function treeSetConnectorsAndIcons(tree)
     -- on case insensitive systems, but need to be allowed in renaming.
     if source == target then return end
 
-    local docs = {}
-    if not isnew then -- find if source is already opened in the editor
-      docs = (isdir
-        and ide:FindDocumentsByPartialPath(source)
-        or {ide:FindDocument(source)})
-      for _, doc in ipairs(docs) do
-        if not isdir and PackageEventHandle("onEditorPreSave", doc.editor, source) == false then
-          return false
-        end
-        if SaveModifiedDialog(doc.editor, true) == wx.wxID_CANCEL then return end
+    -- if target is a file, is already loaded and modified, then reject renaming
+    local targetdocs = isnew and {} or (isdir
+      and ide:FindDocumentsByPartialPath(target)
+      or {ide:FindDocument(target)})
+    for _, doc in ipairs(targetdocs) do
+      if doc and doc:IsModified() then
+        ide:ReportError(TR("Can't overwrite unsaved file '%s'."):format(doc:GetFilePath()))
+        return false
       end
+    end
+
+    if PackageEventHandle("onFiletreeFilePreRename", tree, itemsrc, source, target) == false then
+      return false
     end
 
     -- check if existing file/dir is going to be overwritten
     local overwrite = ((wx.wxFileExists(target) or wx.wxDirExists(target))
       and not wx.wxFileName(source):SameAs(fn))
-    if overwrite and not ApproveFileOverwrite() then return false end
-
-    if not fn:Mkdir(tonumber(755,8), wx.wxPATH_MKDIR_FULL) then
-      ReportError(TR("Unable to create directory '%s'."):format(target))
+    local doc = ide:FindDocument(target)
+    if overwrite then
+      if doc then doc:SetActive() end
+      if isdir then
+        ide:ReportError(TR("Can't overwrite existing directory '%s'."):format(target))
+        return false
+      end
+      if not ApproveFileOverwrite() then return false end
+    end
+    if not fn:Mkdir(tonumber("755",8), wx.wxPATH_MKDIR_FULL) then
+      ide:ReportError(TR("Unable to create directory '%s'."):format(target))
       return false
     end
 
     if isnew then -- new directory or file; create manually
-      if (isdir and not wx.wxFileName.DirName(target):Mkdir(tonumber(755,8), wx.wxPATH_MKDIR_FULL))
+      if (isdir and not wx.wxFileName.DirName(target):Mkdir(tonumber("755",8), wx.wxPATH_MKDIR_FULL))
       or (not isdir and not FileWrite(target, "")) then
-        ReportError(TR("Unable to create file '%s'."):format(target))
+        ide:ReportError(TR("Unable to create file '%s'."):format(target))
         return false
       end
     else -- existing directory or file; rename/move it
       local ok, err = FileRename(source, target)
       if not ok then
-        ReportError(TR("Unable to rename file '%s'."):format(source)
+        ide:ReportError(TR("Unable to rename file '%s'."):format(source)
           .."\nError: "..err)
         return false
       end
     end
 
-    refreshAncestors(cache and cache.parent or tree:GetItemParent(itemsrc))
-    -- load file(s) into the same editor (if any); will also refresh the tree
-    if #docs > 0 then
-      for _, doc in ipairs(docs) do
-        local fullpath = doc.filePath
-        doc.filePath = nil -- remove path to avoid "file no longer exists" message
-        -- when moving folders, /foo/bar/file.lua can be replaced with
-        -- /foo/baz/bar/file.lua, so change /foo/bar to /foo/baz/bar
-        local path = (not iscaseinsensitive and fullpath:gsub(q(source), target)
-          or fullpath:lower():gsub(q(source:lower()), target))
-        local editor = LoadFile(path)
-        -- check if the file was loaded into another editor;
-        -- this is possible if "foo" is renamed to "bar" and both are opened;
-        -- if this happens, then "bar" is refreshed and "foo" can be closed.
-        if doc.editor:GetId() ~= editor:GetId() then ClosePage(doc.index) end
-        if not isdir and editor then PackageEventHandle("onEditorSave", editor) end
-      end
-    else -- refresh the tree and select the new item
-      local itemdst = tree:FindItem(target)
-      if itemdst then
-        refreshAncestors(tree:GetItemParent(itemdst))
-        tree:SelectItem(itemdst)
-        tree:EnsureVisible(itemdst)
-        tree:SetScrollPos(wx.wxHORIZONTAL, 0, true)
-      end
+    local expanded = tree:IsExpanded(itemsrc)
+    local pos = tree:GetScrollPos(wx.wxVERTICAL)
+
+    tree:Freeze()
+
+    refreshAncestors(tree:GetItemParent(itemsrc))
+
+    -- if not new, check if source is already opened in the editor
+    local sourcedocs = isnew and {} or (isdir
+      and ide:FindDocumentsByPartialPath(source)
+      or {ide:FindDocument(source)})
+    local targetdoc = ide:FindDocument(target)
+
+    -- need to protect against `%` characters in target, as those can be interpteted
+    -- as a sequence number in replacement
+    local escapedtarget = target:gsub("%%", "%%%%")
+    for _, doc in ipairs(sourcedocs) do
+      local fullpath = doc:GetFilePath()
+      -- when moving folders, /foo/bar/file.lua can be replaced with
+      -- /foo/baz/bar/file.lua, so change /foo/bar to /foo/baz/bar
+      local path = (not iscaseinsensitive and fullpath:gsub(q(source), escapedtarget)
+        or fullpath:lower():gsub(q(source:lower()), escapedtarget))
+
+      doc:SetFilePath(path)
+      doc:SetFileName(wx.wxFileName(path):GetFullName())
+      doc:SetFileModifiedTime(GetFileModTime(path))
+      doc:SetTabText(doc:GetFileName())
+      if doc:IsActive() then doc:SetActive() end
+      -- reset target document if it matches one of the source docs
+      -- this may happen if one of the opened documents is renamed
+      if doc == targetdoc then targetdoc = nil end
     end
 
-    -- refresh the target if it's open and has been overwritten
-    if overwrite and not isdir then
-      local doc = ide:FindDocument(target)
-      if doc then LoadFile(doc:GetFilePath(), doc:GetEditor()) end
+    -- close the target document, since the source has already been updated for it
+    if targetdoc and #sourcedocs > 0 then targetdoc:Close() end
+
+    tree:Thaw()
+
+    local itemdst = tree:FindItem(target)
+    if itemdst then
+      tree:UnselectAll()
+      tree:RefreshChildren(tree:GetItemParent(itemdst))
+      tree:SetFocusedItem(itemdst)
+      tree:SelectItem(itemdst)
+      if expanded then tree:Expand(itemdst) end
+      tree:SetScrollPos(wx.wxVERTICAL, pos)
     end
+
+    PackageEventHandle("onFiletreeFileRename", tree, itemsrc, source, target)
 
     return true
   end
   local function deleteItem(item_id)
     -- if delete is for mapped directory, unmap it instead
     if tree:IsDirMapped(item_id) then
-      unMapDir(tree:GetItemText(item_id))
+      tree:UnmapDirectory(tree:GetItemText(item_id))
       return
     end
 
     local isdir = tree:IsDirectory(item_id)
     local source = tree:GetItemFullName(item_id)
+
+    if PackageEventHandle("onFiletreeFilePreDelete", tree, item_id, source) == false then
+      return false
+    end
 
     if isdir and FileDirHasContent(source..pathsep) then return false end
     if wx.wxMessageBox(
@@ -399,19 +442,36 @@ local function treeSetConnectorsAndIcons(tree)
 
     if isdir then
       if not wx.wxRmdir(source) then
-        ReportError(TR("Unable to delete directory '%s': %s")
+        ide:ReportError(TR("Unable to delete directory '%s': %s")
           :format(source, wx.wxSysErrorMsg()))
       end
     else
       local doc = ide:FindDocument(source)
-      if doc then ClosePage(doc.index) end
+      if doc then doc:Close() end
       if not wx.wxRemoveFile(source) then
-        ReportError(TR("Unable to delete file '%s': %s")
+        ide:ReportError(TR("Unable to delete file '%s': %s")
           :format(source, wx.wxSysErrorMsg()))
       end
     end
     refreshAncestors(tree:GetItemParent(item_id))
+    PackageEventHandle("onFiletreeFileDelete", tree, item_id, source)
     return true
+  end
+
+  if wx.wxLuaFileDropTarget then
+    -- localizing FileDropTarget doesn't work in wxlua 2.8.13, so keep it in a field
+    ide.filetree.filedrop = wx.wxLuaFileDropTarget()
+    ide.filetree.filedrop.OnDropFiles = function(self, x, y, filenames)
+      local item_id = tree:HitTest(wx.wxPoint(x,y))
+      -- set project if one file moved over the project directory
+      if item_id:IsOk() and not tree:GetItemParent(item_id):IsOk() and #filenames == 1 then
+        ide:SetProject(filenames[1])
+      else
+        for i = 1, #filenames do tree:MapDirectory(filenames[i]) end
+      end
+      return true
+    end
+    tree:SetDropTarget(ide.filetree.filedrop)
   end
 
   tree:Connect(wx.wxEVT_COMMAND_TREE_ITEM_COLLAPSED,
@@ -445,10 +505,6 @@ local function treeSetConnectorsAndIcons(tree)
       tree:ActivateItem(event:GetItem())
     end)
 
-  local function saveSettings()
-    ide:AddPackage('core.filetree', {}):SetSettings(filetree.settings)
-  end
-
   -- refresh the tree
   local function refreshChildren()
     tree:RefreshChildren()
@@ -460,54 +516,96 @@ local function treeSetConnectorsAndIcons(tree)
   -- handle context menu
   local function addItem(item_id, name, img)
     local isdir = tree:IsDirectory(item_id)
-    local parent = isdir and item_id or tree:GetItemParent(item_id)
-    if isdir then tree:Expand(item_id) end -- expand to populate if needed
+    local ismapped = tree:IsDirMapped(item_id)
+    local parent = (isdir or ismapped) and item_id or tree:GetItemParent(item_id)
+    if isdir or ismapped then tree:Expand(item_id) end -- expand to populate if needed
 
     local item = tree:PrependItem(parent, name, img)
     tree:SetItemHasChildren(parent, true)
     -- temporarily disable expand as we don't need this node populated
-    tree:SetEvtHandlerEnabled(false)
-    tree:EnsureVisible(item)
-    tree:SetEvtHandlerEnabled(true)
+    if not tree:IsVisible(item) then
+      tree:SetEvtHandlerEnabled(false)
+      tree:EnsureVisible(item)
+      tree:SetEvtHandlerEnabled(true)
+    end
     return item
   end
 
-  local function unsetStartFile()
-    local project = FileTreeGetDir()
-    local startfile = filetree.settings.startfile[project]
-    filetree.settings.startfile[project] = nil
-    if startfile then
-      local item_id = tree:FindItem(startfile)
-      if item_id and item_id:IsOk() then
-        tree:SetItemImage(item_id, getIcon(tree:GetItemFullName(item_id)))
-      end
+  local function updateItemImage(item_id)
+    if item_id and item_id:IsOk() then
+      local path = tree:GetItemFullName(item_id)
+      tree:SetItemImage(item_id, getIcon(path))
+      -- if the file is opened, then change the tab icon as well
+      local doc = ide:FindDocument(path)
+      if doc then doc:SetTabText() end
     end
   end
 
-  local function setStartFile(item_id)
-    local project = FileTreeGetDir()
-    local startfile = tree:GetItemFullName(item_id):gsub(project, "")
-    filetree.settings.startfile[project] = startfile
-    tree:SetItemImage(item_id, getIcon(tree:GetItemFullName(item_id)))
+  local function unsetStartFile()
+    local project = ide:GetProject()
+    if not project then return end
+
+    local startfile = filetree.settings.startfile[project]
+    filetree.settings.startfile[project] = nil
+    if startfile then
+      updateItemImage(tree:FindItem(startfile))
+    end
+    return startfile
   end
 
-  tree:Connect(ID_NEWFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
+  local function setStartFile(item_id)
+    local project = ide:GetProject()
+    if not project then return end
+
+    local startfile = tree:GetItemFullName(item_id):gsub(q(project), "")
+    filetree.settings.startfile[project] = startfile
+    updateItemImage(item_id)
+    return startfile
+  end
+
+  function tree:GetStartFile()
+    local project = ide:GetProject()
+    return project and filetree.settings.startfile[project]
+  end
+
+  function tree:SetStartFile(path)
+    local item_id
+    local project = ide:GetProject()
+    if project and type(path) == "string" then
+      local startfile = path:gsub(q(project), "")
+      item_id = self:FindItem(startfile)
+    end
+    -- unset if explicitly requested or the replacement has been found
+    if not path or item_id then unsetStartFile() end
+    if item_id then setStartFile(item_id) end
+
+    saveSettings()
+    return item_id
+  end
+
+  if ide.osname == "Unix" then
+    local gfi = tree.GetFocusedItem
+    tree.focusedItem = false
+    function tree:GetFocusedItem(...) return self.focusedItem or gfi(self, ...) end
+  end
+
+  tree:Connect(ID.NEWFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      tree:EditLabel(addItem(tree:GetSelection(), empty, image.FILEOTHER))
+      tree:EditLabel(addItem(tree:GetFocusedItem(), empty, image.FILEOTHER))
     end)
-  tree:Connect(ID_NEWDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.NEWDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      tree:EditLabel(addItem(tree:GetSelection(), empty, image.DIRECTORY))
+      tree:EditLabel(addItem(tree:GetFocusedItem(), empty, image.DIRECTORY))
     end)
-  tree:Connect(ID_RENAMEFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
-    function() tree:EditLabel(tree:GetSelection()) end)
-  tree:Connect(ID_DELETEFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
-    function() deleteItem(tree:GetSelection()) end)
-  tree:Connect(ID_COPYFULLPATH, wx.wxEVT_COMMAND_MENU_SELECTED,
-    function() ide:CopyToClipboard(tree:GetItemFullName(tree:GetSelection())) end)
-  tree:Connect(ID_OPENEXTENSION, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.RENAMEFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
+    function() tree:EditLabel(tree:GetFocusedItem()) end)
+  tree:Connect(ID.DELETEFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
+    function() deleteItem(tree:GetFocusedItem()) end)
+  tree:Connect(ID.COPYFULLPATH, wx.wxEVT_COMMAND_MENU_SELECTED,
+    function() ide:CopyToClipboard(tree:GetItemFullName(tree:GetFocusedItem())) end)
+  tree:Connect(ID.OPENEXTENSION, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      local fname = tree:GetItemFullName(tree:GetSelection())
+      local fname = tree:GetItemFullName(tree:GetFocusedItem())
       local ext = '.'..wx.wxFileName(fname):GetExt()
       local ft = wx.wxTheMimeTypesManager:GetFileTypeFromExtension(ext)
       if ft then
@@ -520,107 +618,113 @@ local function treeSetConnectorsAndIcons(tree)
         wx.wxExecute(cmd, wx.wxEXEC_ASYNC)
       end
     end)
-  tree:Connect(ID_REFRESH, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.REFRESH, wx.wxEVT_COMMAND_MENU_SELECTED,
     function() refreshChildren() end)
-  tree:Connect(ID_SHOWLOCATION, wx.wxEVT_COMMAND_MENU_SELECTED,
-    function() ShowLocation(tree:GetItemFullName(tree:GetSelection())) end)
-  tree:Connect(ID_HIDEEXTENSION, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.SHOWLOCATION, wx.wxEVT_COMMAND_MENU_SELECTED,
+    function() ShowLocation(tree:GetItemFullName(tree:GetFocusedItem())) end)
+  tree:Connect(ID.HIDEEXTENSION, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      local ext = GetFileExt(tree:GetItemText(tree:GetSelection()))
+      local ext = GetFileExt(tree:GetItemText(tree:GetFocusedItem()))
       filetree.settings.extensionignore[ext] = true
       saveSettings()
       refreshChildren()
     end)
-  tree:Connect(ID_SHOWEXTENSIONALL, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.SHOWEXTENSIONALL, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
       filetree.settings.extensionignore = {}
       saveSettings()
       refreshChildren()
     end)
-  tree:Connect(ID_SETSTARTFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.SETSTARTFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      unsetStartFile()
-      setStartFile(tree:GetSelection())
-      saveSettings()
+      tree:SetStartFile(tree:GetItemFullName(tree:GetFocusedItem()))
     end)
-  tree:Connect(ID_UNSETSTARTFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.UNSETSTARTFILE, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      unsetStartFile()
-      saveSettings()
+      tree:SetStartFile()
     end)
-  tree:Connect(ID_MAPDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.MAPDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      mapDir()
-      saveSettings()
+      tree:MapDirectory()
     end)
-  tree:Connect(ID_UNMAPDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.UNMAPDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      unMapDir(tree:GetItemText(tree:GetSelection()))
-      saveSettings()
+      tree:UnmapDirectory(tree:GetItemText(tree:GetFocusedItem()))
     end)
-  tree:Connect(ID_PROJECTDIRFROMDIR, wx.wxEVT_COMMAND_MENU_SELECTED,
+  tree:Connect(ID.HOISTDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
     function()
-      ide:SetProject(tree:GetItemFullName(tree:GetSelection()))
+      treeSetRoot(tree, tree:GetItemFullName(tree:GetFocusedItem()))
+    end)
+  tree:Connect(ID.UNHOISTDIRECTORY, wx.wxEVT_COMMAND_MENU_SELECTED,
+    function()
+      treeSetRoot(tree, ide:GetProject())
+    end)
+  tree:Connect(ID.PROJECTDIRFROMDIR, wx.wxEVT_COMMAND_MENU_SELECTED,
+    function()
+      ide:SetProject(tree:GetItemFullName(tree:GetFocusedItem()))
     end)
 
   tree:Connect(wx.wxEVT_COMMAND_TREE_ITEM_MENU,
     function (event)
       local item_id = event:GetItem()
-      tree:SelectItem(item_id)
+      tree:SetFocusedItem(item_id)
 
       local renamelabel = (tree:IsRoot(item_id)
         and TR("&Edit Project Directory")
         or TR("&Rename"))
       local fname = tree:GetItemText(item_id)
       local ext = GetFileExt(fname)
-      local startfile = filetree.settings.startfile[FileTreeGetDir()]
+      local project = ide:GetProject()
+      local startfile = project and filetree.settings.startfile[project]
       local menu = ide:MakeMenu {
-        { ID_NEWFILE, TR("New &File") },
-        { ID_NEWDIRECTORY, TR("&New Directory") },
+        { ID.NEWFILE, TR("New &File") },
+        { ID.NEWDIRECTORY, TR("&New Directory") },
         { },
-        { ID_RENAMEFILE, renamelabel..KSC(ID_RENAMEFILE) },
-        { ID_DELETEFILE, TR("&Delete")..KSC(ID_DELETEFILE) },
-        { ID_REFRESH, TR("Refresh") },
+        { ID.RENAMEFILE, renamelabel..KSC(ID.RENAMEFILE) },
+        { ID.DELETEFILE, TR("&Delete")..KSC(ID.DELETEFILE) },
+        { ID.REFRESH, TR("Refresh") },
         { },
-        { ID_HIDEEXTENSION, TR("Hide '.%s' Files"):format(ext) },
+        { ID.HIDEEXTENSION, TR("Hide '.%s' Files"):format(ext) },
         { },
-        { ID_SETSTARTFILE, TR("Set As Start File") },
-        { ID_UNSETSTARTFILE, TR("Unset '%s' As Start File"):format(startfile or "<none>") },
+        { ID.SETSTARTFILE, TR("Set As Start File") },
+        { ID.UNSETSTARTFILE, TR("Unset '%s' As Start File"):format(startfile or "<none>") },
         { },
-        { ID_MAPDIRECTORY, TR("Map Directory...") },
-        { ID_UNMAPDIRECTORY, TR("Unmap Directory") },
-        { ID_OPENEXTENSION, TR("Open With Default Program") },
-        { ID_COPYFULLPATH, TR("Copy Full Path") },
-        { ID_SHOWLOCATION, TR("Show Location") },
+        { ID.HOISTDIRECTORY, TR("Hoist Directory") },
+        { ID.UNHOISTDIRECTORY, TR("Unhoist Directory") },
+        { ID.MAPDIRECTORY, TR("Map Directory...") },
+        { ID.UNMAPDIRECTORY, TR("Unmap Directory") },
+        { ID.OPENEXTENSION, TR("Open With Default Program") },
+        { ID.COPYFULLPATH, TR("Copy Full Path") },
+        { ID.SHOWLOCATION, TR("Open Containing Folder") },
       }
       local extlist = {
         {},
-        { ID_SHOWEXTENSIONALL, TR("Show All Files"), TR("Show all files") },
+        { ID.SHOWEXTENSIONALL, TR("Show All Files"), TR("Show all files") },
       }
-      for ext in pairs(filetree.settings.extensionignore) do
-        local id = ID("filetree.showextension."..ext)
-        table.insert(extlist, 1, {id, '.'..ext})
+      for extignore in pairs(filetree.settings.extensionignore) do
+        local id = ID("filetree.showextension."..extignore)
+        table.insert(extlist, 1, {id, '.'..extignore})
         menu:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function()
-          filetree.settings.extensionignore[ext] = nil
+          filetree.settings.extensionignore[extignore] = nil
           saveSettings()
           refreshChildren()
         end)
       end
-      local _, _, hideextpos = ide:FindMenuItem(ID_HIDEEXTENSION, menu)
+      local _, _, hideextpos = ide:FindMenuItem(ID.HIDEEXTENSION, menu)
       assert(hideextpos, "Can't find HideExtension menu item")
-      menu:Insert(hideextpos+1, wx.wxMenuItem(menu, ID_SHOWEXTENSION,
+      menu:Insert(hideextpos+1, wx.wxMenuItem(menu, ID.SHOWEXTENSION,
         TR("Show Hidden Files"), TR("Show files previously hidden"),
         wx.wxITEM_NORMAL, ide:MakeMenu(extlist)))
 
       local projectdirectorymenu = ide:MakeMenu {
         { },
-        {ID_PROJECTDIRCHOOSE, TR("Choose...")..KSC(ID_PROJECTDIRCHOOSE), TR("Choose a project directory")},
-        {ID_PROJECTDIRFROMDIR, TR("Set To Selected Directory")..KSC(ID_PROJECTDIRFROMDIR), TR("Set project directory to the selected one")},
+        {ID.PROJECTDIRCHOOSE, TR("Choose...")..KSC(ID.PROJECTDIRCHOOSE), TR("Choose a project directory")},
+        {ID.PROJECTDIRFROMDIR, TR("Set To Selected Directory")..KSC(ID.PROJECTDIRFROMDIR), TR("Set project directory to the selected one")},
       }
-      local projectdirectory = wx.wxMenuItem(menu, ID_PROJECTDIR,
+      local projectdirectory = wx.wxMenuItem(menu, ID.PROJECTDIR,
         TR("Project Directory"), TR("Set the project directory to be used"),
         wx.wxITEM_NORMAL, projectdirectorymenu)
-      local _, _, unmapdirpos = ide:FindMenuItem(ID_UNMAPDIRECTORY, menu)
+      local _, _, unmapdirpos = ide:FindMenuItem(ID.UNMAPDIRECTORY, menu)
       assert(unmapdirpos, "Can't find UnMapDirectory menu item")
       menu:Insert(unmapdirpos+1, projectdirectory)
       FileTreeProjectListUpdate(projectdirectorymenu, 0)
@@ -628,22 +732,30 @@ local function treeSetConnectorsAndIcons(tree)
       -- disable Delete on non-empty directories
       local isdir = tree:IsDirectory(item_id)
       local ismapped = tree:IsDirMapped(item_id)
-      menu:Destroy(ismapped and ID_MAPDIRECTORY or ID_UNMAPDIRECTORY)
-      if not startfile then menu:Destroy(ID_UNSETSTARTFILE) end
-      if ismapped then menu:Enable(ID_RENAMEFILE, false) end
+      menu:Destroy(ismapped and ID.MAPDIRECTORY or ID.UNMAPDIRECTORY)
+
+      local isroot = tree:IsRoot(item_id)
+      local ishoisted = tree:IsDirHoisted(tree:GetRootItem())
+      menu:Enable(ID.UNHOISTDIRECTORY, ishoisted)
+      menu:Enable(ID.HOISTDIRECTORY, isdir and not isroot or ismapped)
+      if not ishoisted then menu:Destroy(ID.UNHOISTDIRECTORY) end
+      if ishoisted and (not isdir or isroot) then menu:Destroy(ID.HOISTDIRECTORY) end
+
+      if not startfile then menu:Destroy(ID.UNSETSTARTFILE) end
+      if ismapped then menu:Enable(ID.RENAMEFILE, false) end
       if isdir then
         local source = tree:GetItemFullName(item_id)
-        menu:Enable(ID_DELETEFILE, not FileDirHasContent(source..pathsep))
-        menu:Enable(ID_OPENEXTENSION, false)
-        menu:Enable(ID_HIDEEXTENSION, false)
+        menu:Enable(ID.DELETEFILE, not FileDirHasContent(source..pathsep))
+        menu:Enable(ID.OPENEXTENSION, false)
+        menu:Enable(ID.HIDEEXTENSION, false)
       else
         local ft = wx.wxTheMimeTypesManager:GetFileTypeFromExtension('.'..ext)
-        menu:Enable(ID_OPENEXTENSION, ft and #ft:GetOpenCommand("") > 0)
-        menu:Enable(ID_HIDEEXTENSION, not filetree.settings.extensionignore[ext])
-        menu:Enable(ID_PROJECTDIRFROMDIR, false)
+        menu:Enable(ID.OPENEXTENSION, ft and #ft:GetOpenCommand("") > 0)
+        menu:Enable(ID.HIDEEXTENSION, not filetree.settings.extensionignore[ext])
+        menu:Enable(ID.PROJECTDIRFROMDIR, false)
       end
-      menu:Enable(ID_SETSTARTFILE, tree:IsFileOther(item_id) or tree:IsFileKnown(item_id))
-      menu:Enable(ID_SHOWEXTENSION, next(filetree.settings.extensionignore) ~= nil)
+      menu:Enable(ID.SETSTARTFILE, tree:IsFileOther(item_id) or tree:IsFileKnown(item_id))
+      menu:Enable(ID.SHOWEXTENSION, next(filetree.settings.extensionignore) ~= nil)
 
       PackageEventHandle("onMenuFiletree", menu, tree, event)
 
@@ -659,7 +771,15 @@ local function treeSetConnectorsAndIcons(tree)
       local interval = wx.wxUpdateUIEvent.GetUpdateInterval()
       wx.wxUpdateUIEvent.SetUpdateInterval(-1) -- don't update
 
+      if ide.osname == "Unix" then
+        -- Linux implementation is losing focus item state after the popup window is shown,
+        -- so save it to use if needed
+        tree.focusedItem = tree:GetFocusedItem()
+      end
+
       tree:PopupMenu(menu)
+
+      tree.focusedItem = false
       wx.wxUpdateUIEvent.SetUpdateInterval(interval)
       collectgarbage("restart")
     end)
@@ -689,7 +809,6 @@ local function treeSetConnectorsAndIcons(tree)
       if item_id and item_id:IsOk() and bit.band(flags, mask) > 0 then
         if tree:IsDirectory(item_id) then
           tree:Toggle(item_id)
-          tree:SelectItem(item_id)
         else
           local name = tree:GetItemFullName(item_id)
           if wx.wxFileExists(name) then LoadFile(name,nil,true) end
@@ -730,25 +849,21 @@ local function treeSetConnectorsAndIcons(tree)
       local target = MergeFullPath(tree:GetItemFullName(parent), label)
       if cancelled or label == empty then refreshAncestors(parent)
       elseif target then
-        -- normally, none of this caching would be needed as `renameItem`
-        -- would be called to check if the item can be renamed;
-        -- however, as it may open a dialog box, on Linux it's causing a crash
-        -- (caused by the same END_LABEL_EDIT even triggered one more time),
-        -- so to protect from that, `renameItem` is called from IDLE event.
-        -- Unfortunately, by that time, the filetree item (`itemsrc`) may
-        -- already have incorrect state (as it's removed from the tree),
-        -- so its properties need to be cached to be used from IDLE event.
-        local cache = {
-          isdir = tree:IsDirectory(itemsrc),
-          isnew = tree:GetItemText(itemsrc) == empty,
-          fullname = tree:GetItemFullName(itemsrc),
-          parent = parent,
-        }
-        ide:DoWhenIdle(function()
-            if not renameItem(cache, target) then refreshAncestors(parent) end
-          end)
+        -- wxwidgets v2.9.5 and earlier crashes when the IDE loses focus
+        -- during renaming a file that has a conflict with an exising one
+        -- (caused by the same END_LABEL_EDIT even triggered one more time).
+        if ide.osname == "Linux" and ide.wxver <= "2.9.5" then return end
+        if not renameItem(itemsrc, target) then refreshAncestors(parent) end
       end
     end)
+
+  if ide.wxver >= "3.1.3" then
+    -- provide workaround for white background in a focused item in the tree
+    -- on Linux when the tree itself is unfocused (may be gtk3-only issue);
+    -- enable on all platforms, as the brackground is low contrast on MacOS
+    -- and blue-colored on Windows
+    tree:Connect(wx.wxEVT_KILL_FOCUS, function(event) tree:ClearFocusedItem() end)
+  end
 
   local itemsrc
   tree:Connect(wx.wxEVT_COMMAND_TREE_BEGIN_DRAG,
@@ -777,9 +892,9 @@ end
 -- project
 local projtree = ide:CreateTreeCtrl(ide.frame, wx.wxID_ANY,
   wx.wxDefaultPosition, wx.wxDefaultSize,
-  wx.wxTR_HAS_BUTTONS + wx.wxTR_SINGLE + wx.wxTR_LINES_AT_ROOT
+  wx.wxTR_HAS_BUTTONS + wx.wxTR_MULTIPLE + wx.wxTR_LINES_AT_ROOT
   + wx.wxTR_EDIT_LABELS + wx.wxNO_BORDER)
-projtree:SetFont(ide.font.fNormal)
+projtree:SetFont(ide.font.tree)
 filetree.projtreeCtrl = projtree
 
 ide:GetProjectNotebook():AddPage(projtree, TR("Project"), true)
@@ -832,19 +947,13 @@ function filetree:updateProjectDir(newdir)
   ide:SetProject(newdir,true)
   treeSetRoot(projtree,newdir)
 
-  -- sync with the current editor window and activate selected file
-  local editor = GetEditor()
-  if editor then FileTreeMarkSelected(ide:GetDocument(editor):GetFilePath()) end
-
   -- refresh Recent Projects menu item
-  ide.frame:AddPendingEvent(wx.wxUpdateUIEvent(ID_RECENTPROJECTS))
+  ide.frame:AddPendingEvent(wx.wxUpdateUIEvent(ID.RECENTPROJECTS))
 
   PackageEventHandle("onProjectLoad", appendPathSep(newdir))
 
   return true
 end
-
-function FileTreeGetDir() return appendPathSep(filetree.projdir) end
 
 function FileTreeSetProjects(tab)
   filetree.projdirlist = tab
@@ -863,7 +972,7 @@ local function getProjectLabels()
     local intfname = config and config[2] and config[2].interpreter or ide.interpreter:GetFileName()
     local interpreter = intfname and ide.interpreters[intfname]
     local parts = wx.wxFileName(proj..pathsep):GetDirs()
-    table.insert(labels, ExpandPlaceholders(fmt, {
+    table.insert(labels, ide:ExpandPlaceholders(fmt, {
           f = proj,
           i = interpreter and interpreter:GetName() or (intfname or '')..'?',
           s = parts[#parts] or '',
@@ -874,12 +983,12 @@ end
 
 function FileTreeProjectListClear()
   -- remove all items from the list except the current one
-  filetree.projdirlist = {FileTreeGetDir()}
+  filetree.projdirlist = {ide:GetProject()}
 end
 
 function FileTreeProjectListUpdate(menu, items)
   -- protect against recent project menu not being present
-  if not ide:FindMenuItem(ID_RECENTPROJECTS) then return end
+  if not ide:FindMenuItem(ID.RECENTPROJECTS) then return end
 
   local list = getProjectLabels()
   for i=#list, 1, -1 do
@@ -920,12 +1029,26 @@ function FileTreeMarkSelected(file)
       local curr_id = wx.wxIsAbsolutePath(curr_file) and projtree:FindItem(curr_file)
       if curr_id and projtree:IsBold(curr_id) then
         projtree:SetItemBold(curr_id, false)
+        PackageEventHandle("onFiletreeFileMarkSelected", projtree, curr_id, curr_file, false)
       end
     end
     if item_id then
-      projtree:EnsureVisible(item_id)
-      projtree:SetScrollPos(wx.wxHORIZONTAL, 0, true)
+      if not projtree:IsVisible(item_id) then
+        projtree:EnsureVisible(item_id)
+        -- it's supposed to be enough to do EnsureVisible,
+        -- but occasionally it's positioned one item too high (wxwidgets 3.1.1 on Win),
+        -- so scroll to make sure the item really is visible
+        projtree:ScrollTo(item_id)
+        projtree:SetScrollPos(wx.wxHORIZONTAL, 0, true)
+        if ide.osname == "Windows" then
+          -- the following is a workaround for SetScrollPos not scrolling in wxwidgets 3.1.3
+          -- https://trac.wxwidgets.org/ticket/18543
+          projtree:Freeze()
+          projtree:Thaw()
+        end
+      end
       projtree:SetItemBold(item_id, true)
+      PackageEventHandle("onFiletreeFileMarkSelected", projtree, item_id, file, true)
     end
     curr_file = file
     if ide.wxver < "2.9.5" and ide.osname == 'Macintosh' then
@@ -944,7 +1067,7 @@ function FileTreeFindByPartialName(name)
   local pattern = q(name:gsub("^%.%.%.","")):gsub("[\\/]", "[\\/]").."$"
   local lpattern = pattern:lower()
 
-  for _, file in ipairs(FileSysGetRecursive(filetree.projdir, true)) do
+  for _, file in ipairs(ide:GetFileList(filetree.projdir, true)) do
     if file:find(pattern) or iscaseinsensitive and file:lower():find(lpattern) then
       filetree.projdirpartmap[name] = file
       return file
@@ -973,6 +1096,14 @@ local function unWatchDir(path)
   if watcher and watchers[path] then watcher:Remove(wx.wxFileName.DirName(path)) end
   watchers[path] = nil
 end
+
+local function syncTree(editor)
+    local doc = editor and ide:GetDocument(editor)
+    FileTreeMarkSelected(doc and doc:GetFilePath() or '')
+    SetAutoRecoveryMark()
+    ide:SetTitle()
+end
+
 local package = ide:AddPackage('core.filetree', {
     onProjectClose = function(plugin, project)
       if watcher then watcher:RemoveAll() end
@@ -1018,6 +1149,17 @@ local package = ide:AddPackage('core.filetree', {
       -- only unwatch if the directory is not empty;
       -- otherwise it's collapsed without ability to expand
       if tree:GetChildrenCount(item_id, false) > 0 then unWatchDir(tree:GetItemFullName(item_id)) end
+    end,
+
+    onEditorFocusSet = function(plugin, editor)
+      -- need to delay the sync, as the document may not yet exist for the editor
+      ide:DoWhenIdle(function() if ide:IsValidCtrl(editor) then syncTree(editor) end end,
+        "core.filetree.oneditorfocusset")
+    end,
+
+    onEditorClose = function(plugin, editor)
+      -- check if the last document is being closed
+      if #ide:GetDocumentList() <= 1 then syncTree() end
     end,
   })
 MergeSettings(filetree.settings, package:GetSettings())
