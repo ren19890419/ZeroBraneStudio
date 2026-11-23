@@ -350,6 +350,34 @@ local function stack(start)
   return stack
 end
 
+local function describeLocalType(value, depth, maxnum, seen)
+  local kind = type(value)
+  if kind ~= "table" or depth <= 0 then return kind end
+  if seen[value] then return seen[value] end
+
+  local fields = {}
+  seen[value] = fields
+  local function add(key, child)
+    local keytype, childtype = type(key), type(child)
+    if (keytype == "string" or keytype == "number" or keytype == "boolean")
+    and (childtype == "table" or childtype == "userdata" or childtype == "thread" or childtype == "cdata") then
+      fields[key] = describeLocalType(child, depth - 1, maxnum, seen)
+    end
+  end
+  -- Follow the serializer's limit on entry count, starting with the array part.
+  local length = rawlen and rawlen(value) or #value
+  local n = math.min(length, maxnum)
+  for i = 1, n do add(i, rawget(value, i)) end
+  for key, child in next, value do
+    if n >= maxnum then break end
+    if type(key) ~= "number" or key < 1 or key > length or key % 1 ~= 0 then
+      n = n + 1
+      add(key, child)
+    end
+  end
+  return fields
+end
+
 local function set_breakpoint(file, line)
   if file == '-' and lastfile then file = lastfile
   elseif iscasepreserving then file = string.lower(file) end
@@ -1071,6 +1099,16 @@ local function debugger_loop(sev, svars, sfile, sline)
         params = (type(params) == "table" and params or {})
         if params.nocode == nil then params.nocode = true end
         if params.sparse == nil then params.sparse = false end
+        if params.localtypes then
+          local depth = tonumber(params.maxlevel) or math.huge
+          local maxnum = tonumber(params.maxnum) or math.huge
+          local seen = {}
+          for _, frame in ipairs(vars) do
+            for _, entry in pairs(frame[2]) do
+              entry[3] = describeLocalType(entry[1], depth, maxnum, seen)
+            end
+          end
+        end
         -- take into account additional levels for the stack frames and data management
         if tonumber(params.maxlevel) then params.maxlevel = tonumber(params.maxlevel)+4 end
 

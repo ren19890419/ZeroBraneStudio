@@ -1,6 +1,9 @@
 return {
   ["&Locals"] = "區域變數", -- src\editor\menu_project.lua
   ["Locals"] = "區域變數", -- src\editor\debugger.lua
+  ["Name"] = "名稱", -- src\editor\debugger.lua
+  ["Value"] = "值", -- src\editor\debugger.lua
+  ["Type"] = "類型", -- src\editor\debugger.lua
   ["View local variables in the selected stack frame"] = "檢視所選呼叫框架中的區域變數", -- src\editor\menu_project.lua
   ["Pause execution to inspect local variables."] = "暫停執行後即可檢視區域變數。", -- src\editor\debugger.lua
   ["No local variables."] = "目前的呼叫框架沒有區域變數。", -- src\editor\debugger.lua

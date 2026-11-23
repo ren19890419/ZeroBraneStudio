@@ -122,7 +122,8 @@ function debugger:updateWatchesSync(onlyitem)
 end
 
 local callData = {}
-local localItems = {}
+local NAME_COLUMN, VALUE_COLUMN, TYPE_COLUMN = 0, 1, 2
+local localRows, visibleLocals = {}, {}
 local localsEditor
 
 local function closeLocalsEditor(restoreFocus)
@@ -138,47 +139,92 @@ local function closeLocalsEditor(restoreFocus)
   if restoreFocus then ctrl:SetFocus() end
 end
 
-local function appendLocalValue(ctrl, parent, name, value, params)
-  local key = tostring(name)
-  local label = fixUTF8(("%s = %s"):format(key, serialize(value, params)))
-  local item = ctrl:AppendItem(parent, label, image.LOCAL)
-  local row = {key = name, label = key, value = value}
-  local parentRow = localItems[parent:GetValue()]
-  if not parentRow then
-    if type(name) == "string" and name:match("^[_%a][_%w]*$") then
-      row.name, row.path = name, {}
-    end
-  elseif parentRow.name then
-    local kind = type(name)
-    if kind == "string" or kind == "boolean" or kind == "number" then
-      row.name, row.path = parentRow.name, {unpack(parentRow.path)}
-      row.path[#row.path + 1] = name
+local function makeLocalRows(values, parent, params)
+  local rows = {}
+  for key, entry in pairs(values) do
+    if parent or type(entry) == "table" then
+      local value, types
+      if parent then
+        value = entry
+        if type(parent.types) == "table" then types = parent.types[key] end
+      else
+        value, types = entry[1], entry[3]
+      end
+      local row = {
+        key = key, label = fixUTF8(tostring(key)), value = value, types = types,
+        valueText = fixUTF8(serialize(value, params)),
+        typeText = type(types) == "table" and "table" or types or type(value),
+        expandable = type(value) == "table" and next(value) ~= nil,
+        depth = parent and parent.depth + 1 or 0,
+      }
+      local kind = type(key)
+      if not parent and kind == "string" and key:match("^[_%a][_%w]*$") then
+        row.name, row.path = key, {}
+      elseif parent and parent.name and (kind == "string" or kind == "boolean" or kind == "number") then
+        row.name, row.path = parent.name, {unpack(parent.path)}
+        row.path[#row.path + 1] = key
+      end
+      rows[#rows + 1] = row
     end
   end
-  localItems[item:GetValue()] = row
-  if type(value) == "table" and next(value) ~= nil then
-    ctrl:SetItemHasChildren(item, true)
+  table.sort(rows, function(a, b) return a.label < b.label end)
+  return rows
+end
+
+local function renderLocalRows(ctrl)
+  closeLocalsEditor()
+  visibleLocals = {}
+  local function collect(rows)
+    for _, row in ipairs(rows) do
+      visibleLocals[#visibleLocals + 1] = row
+      if row.expanded then collect(row.children) end
+    end
   end
+  collect(localRows)
+
+  ctrl:BeginBatch()
+  local old, new = ctrl:GetNumberRows(), #visibleLocals
+  if new > old then ctrl:AppendRows(new - old) end
+  if new < old then ctrl:DeleteRows(new, old - new) end
+  for index, row in ipairs(visibleLocals) do
+    local disclosure = row.expandable and (row.expanded and "▾ " or "▸ ") or ""
+    local indent = string.rep("    ", row.depth or 0)
+    ctrl:SetCellValue(index - 1, NAME_COLUMN, indent .. disclosure .. row.label)
+    ctrl:SetCellValue(index - 1, VALUE_COLUMN, row.valueText or "")
+    ctrl:SetCellValue(index - 1, TYPE_COLUMN, row.typeText or "")
+  end
+  ctrl:EndBatch()
+end
+
+local function expandLocal(row)
+  if not row.children then
+    row.children = makeLocalRows(row.value, row, ide:GetDebugger():GetDataOptions({maxlevel=1}))
+  end
+  row.expanded = true
 end
 
 local function restoreLocalSelection(ctrl, request, expanded)
   local path = {request.name, unpack(request.path)}
-  local root = ctrl:GetRootItem()
-  local parent = root
+  local rows, selected = localRows
   for index, key in ipairs(path) do
-    local child = ctrl:GetFirstChild(parent)
-    while child:IsOk() do
-      local row = localItems[child:GetValue()]
-      if row and row.key == key then break end
-      child = ctrl:GetNextSibling(child)
+    local found
+    for _, row in ipairs(rows) do
+      if row.key == key then found = row break end
     end
-    if not child:IsOk() then break end
-    parent = child
-    if (index < #path or expanded) and ctrl:ItemHasChildren(parent) then ctrl:Expand(parent) end
+    if not found then break end
+    selected = found
+    if not found.expandable or (index == #path and not expanded) then break end
+    expandLocal(found)
+    rows = found.children
   end
-  if parent:GetValue() ~= root:GetValue() then
-    ctrl:SelectItem(parent)
-    ctrl:EnsureVisible(parent)
+  if not selected then return end
+  renderLocalRows(ctrl)
+  for index, row in ipairs(visibleLocals) do
+    if row == selected then
+      ctrl:SetGridCursor(index - 1, VALUE_COLUMN)
+      ctrl:MakeCellVisible(index - 1, VALUE_COLUMN)
+      break
+    end
   end
 end
 
@@ -186,24 +232,14 @@ function debugger:renderLocals(message)
   local ctrl = self.localsCtrl
   if not ctrl then return end
 
-  closeLocalsEditor()
-  ctrl:Freeze()
-  ctrl:DeleteAllItems()
-  localItems = {}
-  local root = ctrl:AddRoot(TR("Locals"))
   local frame = self.localsStack and self.localsStack[self.localsFrame or 1]
   local values = type(frame) == "table" and frame[2]
-  if type(values) == "table" and next(values) ~= nil then
-    local params = self:GetDataOptions({maxlevel=1})
-    for name, value in pairs(values) do
-      if type(value) == "table" then appendLocalValue(ctrl, root, name, value[1], params) end
-    end
-    ctrl:SortChildren(root)
-  else
-    ctrl:AppendItem(root, message or (self.localsStack and TR("No local variables.")
-      or TR("Pause execution to inspect local variables.")))
+  localRows = type(values) == "table" and makeLocalRows(values, nil, self:GetDataOptions({maxlevel=1})) or {}
+  if #localRows == 0 then
+    localRows[1] = {label = message or (self.localsStack and TR("No local variables.")
+      or TR("Pause execution to inspect local variables."))}
   end
-  ctrl:Thaw()
+  renderLocalRows(ctrl)
 end
 
 function debugger:resetLocals()
@@ -218,14 +254,15 @@ function debugger:updateStackSync()
   local stackCtrl = debugger.stackCtrl
   local pane = ide.frame.uimgr:GetPane("stackpanel")
   local shown = stackCtrl and (pane:IsOk() and pane:IsShown() or not pane:IsOk() and stackCtrl:IsShown())
+  local localsShown = debugger.localsCtrl and ide:IsWindowShown(debugger.localsCtrl)
   local canupdate = debugger.server and not debugger.running and not debugger.scratchpad
   if not canupdate then return end
-  if not shown and not (debugger.localsCtrl and ide:IsWindowShown(debugger.localsCtrl)) then
+  if not shown and not localsShown then
     debugger.needrefresh.stack = true
     return
   end
 
-  local stack, _, err = debugger:stack(debugger:GetDataOptions({maxlength=false}))
+  local stack, _, err = debugger:stack(debugger:GetDataOptions({maxlength=false, localtypes=localsShown}))
   if not debugger.server or debugger ~= ide:GetDebugger() then return end
   debugger.localsStack = stack or {}
   debugger:renderLocals(err and TR("Could not read local variables."))
@@ -1818,51 +1855,71 @@ debuggerCreateStackWindow()
 debuggerCreateWatchWindow()
 
 do
-  local ctrl = ide:CreateTreeCtrl(ide.frame, wx.wxID_ANY, wx.wxDefaultPosition, wx.wxSize(width, height),
-    wx.wxTR_LINES_AT_ROOT + wx.wxTR_HAS_BUTTONS + wx.wxTR_SINGLE + wx.wxTR_HIDE_ROOT + wx.wxNO_BORDER)
+  local ctrl = wx.wxGrid(ide.frame, wx.wxID_ANY, wx.wxDefaultPosition, wx.wxSize(width, height), wx.wxNO_BORDER)
+  ctrl:CreateGrid(0, 3)
+  ctrl:SetColLabelValue(NAME_COLUMN, TR("Name"))
+  ctrl:SetColLabelValue(VALUE_COLUMN, TR("Value"))
+  ctrl:SetColLabelValue(TYPE_COLUMN, TR("Type"))
+  ctrl:SetRowLabelSize(0)
+  ctrl:SetDefaultRowSize(ctrl:GetCharHeight() + 6, true)
+  ctrl:SetColLabelSize(ctrl:GetCharHeight() + 8)
+  ctrl:SetColLabelAlignment(wx.wxALIGN_LEFT, wx.wxALIGN_CENTER)
+  ctrl:SetDefaultCellAlignment(wx.wxALIGN_LEFT, wx.wxALIGN_CENTER)
+  ctrl:EnableEditing(false)
+  ctrl:DisableDragRowSize()
+  ctrl:SetName(TR("Locals"))
+
+  local cells = ctrl:GetGridWindow()
+  local userSizedColumns
+  local minName = ctrl:GetTextExtent(TR("Name")) + 16
+  local minType = math.max(ctrl:GetTextExtent(TR("Type")), (ctrl:GetTextExtent("userdata"))) + 16
+  local minValue = ctrl:GetTextExtent(TR("Value")) + 16
+  local function fitColumns()
+    if userSizedColumns then return end
+    local available = math.min(ctrl:GetClientSize():GetWidth(), cells:GetClientSize():GetWidth())
+    local nameWidth = math.max(minName, math.floor(available * 0.32))
+    local typeWidth = math.max(minType, math.floor(available * 0.22))
+    ctrl:SetColSize(NAME_COLUMN, nameWidth)
+    ctrl:SetColSize(VALUE_COLUMN, math.max(minValue, available - nameWidth - typeWidth))
+    ctrl:SetColSize(TYPE_COLUMN, typeWidth)
+  end
+
   local debugger = ide:GetDebugger()
   debugger.localsCtrl = ctrl
-  ctrl:SetImageList(debugger.imglist)
   ide:AddPanelFlex(ide:GetOutputNotebook(), ctrl, "localspanel", TR("Locals"))
+  fitColumns()
   debugger:renderLocals()
 
-  ctrl:Connect(wx.wxEVT_COMMAND_TREE_ITEM_EXPANDING, function(event)
-    local item = event:GetItem()
-    local row = localItems[item:GetValue()]
-    if row and type(row.value) == "table" and ctrl:GetChildrenCount(item, false) == 0 then
-      local params = ide:GetDebugger():GetDataOptions({maxlevel=1})
-      for name, value in pairs(row.value) do appendLocalValue(ctrl, item, name, value, params) end
-      ctrl:SortChildren(item)
-    end
-    event:Skip()
-  end)
-  ctrl:Connect(wx.wxEVT_COMMAND_TREE_ITEM_ACTIVATED, function(event)
-    local item = event:GetItem()
-    if not item:IsOk() then item = ctrl:GetSelection() end
-    local row = item:IsOk() and localItems[item:GetValue()]
+  function ctrl:ToggleLocal(index)
+    local row = visibleLocals[index + 1]
+    if not row or not row.expandable then return end
+    if row.expanded then row.expanded = false else expandLocal(row) end
+    renderLocalRows(self)
+    self:SetGridCursor(index, NAME_COLUMN)
+  end
+
+  function ctrl:EditLocal(index, column)
+    local row = visibleLocals[index + 1]
     local debugger = ide:GetDebugger()
     local snapshot, frame = debugger.localsStack, debugger.localsFrame or 1
-    if not row or not row.name or not snapshot or not debugger.server or debugger.running
-    or (debugger.options or {}).noeval then event:Skip() return end
+    if column ~= VALUE_COLUMN or not row or not row.name or not snapshot or not debugger.server
+    or debugger.running or (debugger.options or {}).noeval then return end
 
     closeLocalsEditor()
-    ctrl:EnsureVisible(item)
-    local rect = wx.wxRect()
-    if not ctrl:GetBoundingRect(item, rect, true) then return end
-    local clientWidth = ctrl:GetClientSize():GetWidth()
-    if clientWidth <= 0 then return end
-    local labelWidth = ctrl:GetTextExtent(fixUTF8(row.label .. " = "))
-    local minWidth = ctrl:GetTextExtent("00000000")
-    local x = math.max(0, math.min(rect:GetX() + labelWidth, clientWidth - minWidth))
+    self:SetGridCursor(index, VALUE_COLUMN)
+    self:MakeCellVisible(index, VALUE_COLUMN)
+    local cell = wx.wxGridCellCoords(index, VALUE_COLUMN)
+    local rect = self:BlockToDeviceRect(cell, cell)
+    if rect:GetWidth() <= 0 or rect:GetHeight() <= 0 then return end
 
-    local expanded = ctrl:IsExpanded(item)
+    local expanded = row.expanded
     local original = fixUTF8(serialize(row.value, debugger:GetDataOptions({maxlevel=false, maxlength=false})))
-    local input = wx.wxTextCtrl(ctrl, wx.wxID_ANY, original, wx.wxPoint(x, rect:GetY()),
-      wx.wxSize(clientWidth - x, rect:GetHeight()), wx.wxTE_PROCESS_ENTER + wx.wxBORDER_SIMPLE)
-    input:SetFont(ctrl:GetFont())
-    input:SetForegroundColour(ctrl:GetForegroundColour())
-    input:SetBackgroundColour(ctrl:GetBackgroundColour())
-    input:SetName(fixUTF8(row.label))
+    local input = wx.wxTextCtrl(cells, wx.wxID_ANY, original, wx.wxPoint(rect:GetX(), rect:GetY()),
+      wx.wxSize(rect:GetWidth(), rect:GetHeight()), wx.wxTE_PROCESS_ENTER + wx.wxBORDER_SIMPLE)
+    input:SetFont(self:GetDefaultCellFont())
+    input:SetForegroundColour(self:GetDefaultCellTextColour())
+    input:SetBackgroundColour(self:GetDefaultCellBackgroundColour())
+    input:SetName(row.label)
     localsEditor = input
     local committing
 
@@ -1911,14 +1968,46 @@ do
     end)
     input:SetFocus()
     input:SelectAll()
+  end
+
+  ctrl:Connect(wx.wxEVT_GRID_CELL_LEFT_DCLICK, function(event)
+    ctrl:EditLocal(event:GetRow(), event:GetCol())
+  end)
+  ctrl:Connect(wx.wxEVT_GRID_CELL_LEFT_CLICK, function(event)
+    local index = event:GetRow()
+    local row = visibleLocals[index + 1]
+    if event:GetCol() == NAME_COLUMN and row and row.expandable then
+      local cell = wx.wxGridCellCoords(index, NAME_COLUMN)
+      local rect = ctrl:BlockToDeviceRect(cell, cell)
+      local indent = ctrl:GetTextExtent(string.rep("    ", row.depth))
+      local target = rect:GetX() + indent
+      local x = event:GetPosition():GetX()
+      if x >= target and x <= target + (ctrl:GetTextExtent("▸ ") + 4) then ctrl:ToggleLocal(index) end
+    end
+    event:Skip()
+  end)
+  cells:Connect(wx.wxEVT_KEY_DOWN, function(event)
+    local key, index = event:GetKeyCode(), ctrl:GetGridCursorRow()
+    local row = visibleLocals[index + 1]
+    if ctrl:GetGridCursorCol() == NAME_COLUMN and row and row.expandable
+    and ((key == wx.WXK_RIGHT and not row.expanded) or (key == wx.WXK_LEFT and row.expanded)) then
+      ctrl:ToggleLocal(index)
+    else event:Skip() end
   end)
   local function cancelOnLayoutChange(event)
     closeLocalsEditor()
     event:Skip()
   end
-  ctrl:Connect(wx.wxEVT_SIZE, cancelOnLayoutChange)
-  ctrl:Connect(wx.wxEVT_MOUSEWHEEL, cancelOnLayoutChange)
-  ctrl:Connect(wx.wxEVT_SET_FOCUS, function(event)
+  ctrl:Connect(wx.wxEVT_SIZE, function(event)
+    cancelOnLayoutChange(event)
+    ide:DoWhenIdle(fitColumns, "locals.columns")
+  end)
+  ctrl:Connect(wx.wxEVT_GRID_COL_SIZE, function(event)
+    userSizedColumns = true
+    cancelOnLayoutChange(event)
+  end)
+  cells:Connect(wx.wxEVT_MOUSEWHEEL, cancelOnLayoutChange)
+  cells:Connect(wx.wxEVT_SET_FOCUS, function(event)
     local debugger = ide:GetDebugger()
     if not debugger.localsStack then debugger:updateStack() end
     event:Skip()

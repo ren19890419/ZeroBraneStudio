@@ -10,7 +10,7 @@ FileWrite(debugfile, table.concat({
   "#!/usr/bin/env lua",
   "-- Debugger entry",
   "",
-  "local a = 1+2",
+  "local a, data = 1+2, {handle = io.stdout}",
   "a = 2+3",
   "local function add()",
   "  a = a + 1",
@@ -103,36 +103,40 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     dispatch(ID.DEBUGLOCALS)
     debugger:Wait()
     local locals = ide:GetLocals()
-    local item = locals:GetFirstChild(locals:GetRootItem())
-    ok(item:IsOk() and locals:GetItemText(item) == "a = 3",
-      "Locals shows the paused frame's variable value.")
-    if item:IsOk() then
+    local grid = locals:GetClassInfo():GetClassName() == "wxGrid"
+    ok(grid and locals:GetNumberCols() == 3
+      and locals:GetColLabelValue(0) == TR("Name") and locals:GetColLabelValue(1) == TR("Value")
+      and locals:GetColLabelValue(2) == TR("Type"), "Locals has Name, Value and Type columns.")
+    if grid then
+      is(locals:GetCellValue(0, 0), "a", "Locals shows the variable name.")
+      is(locals:GetCellValue(0, 1), "3", "Locals shows the paused variable value.")
+      is(locals:GetCellValue(0, 2), "number", "Locals shows the Lua type.")
+      locals:ToggleLocal(1)
+      is(locals:GetCellValue(2, 2), "userdata", "Expanded fields show their original Lua type.")
+      locals:ToggleLocal(1)
       local prompt = ide.GetTextFromUser
       local prompted = false
       ide.GetTextFromUser = function() prompted = true end
-      local function editValue()
-        locals:SelectItem(item)
-        local event = wx.wxTreeEvent(wx.wxEVT_COMMAND_TREE_ITEM_ACTIVATED, locals:GetId())
-        event:SetEventObject(locals)
-        locals:ProcessEvent(event)
+      local function editValue(column)
+        locals:EditLocal(0, column)
         local input = locals:FindFocus()
-        if input and input:GetParent() and input:GetParent():GetId() == locals:GetId()
+        if input and input:GetParent() and input:GetParent():GetId() == locals:GetGridWindow():GetId()
         and input:GetClassInfo():GetClassName() == "wxTextCtrl" then
           return input:DynamicCast("wxTextCtrl")
         end
       end
-      local input = editValue()
+      ok(not editValue(0) and not editValue(2), "The Name and Type columns are read-only.")
+      local input = editValue(1)
       ok(not prompted and input ~= nil and input:GetValue() == "3", "Activating a local opens its value inline.")
       if input then
-        local rect = wx.wxRect()
-        local labelWidth = locals:GetTextExtent("a = ")
-        ok(locals:GetBoundingRect(item, rect, true)
-          and input:GetPosition():GetX() == rect:GetX() + labelWidth
-          and input:GetPosition():GetY() == rect:GetY(), "The editor starts at the local value.")
+        local cell = wx.wxGridCellCoords(0, 1)
+        local rect = locals:BlockToDeviceRect(cell, cell)
+        ok(input:GetPosition():GetX() == rect:GetX() and input:GetPosition():GetY() == rect:GetY()
+          and input:GetSize():GetWidth() == rect:GetWidth(), "The editor is contained in the Value cell.")
         input:SetValue("100")
         input:ProcessEvent(wx.wxFocusEvent(wx.wxEVT_KILL_FOCUS))
-        ok(not input:IsShown() and locals:GetItemText(item) == "a = 3", "Leaving the inline editor discards its draft.")
-        input = editValue()
+        ok(not input:IsShown() and locals:GetCellValue(0, 1) == "3", "Leaving the inline editor discards its draft.")
+        input = editValue(1)
         ok(input ~= nil, "The local value can be edited again.")
         if input then
           local function enter()
@@ -143,10 +147,10 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
           enter()
           ok(input:IsShown() and input:IsEditable() and input:GetValue() == "a +",
             "An invalid expression stays in the inline editor for correction.")
-          input:SetValue("a + 4")
+          input:SetValue('"7"')
           enter()
-          local updated = locals:GetFirstChild(locals:GetRootItem())
-          ok(updated:IsOk() and locals:GetItemText(updated) == "a = 7", "Enter commits the local edit.")
+          is(locals:GetCellValue(0, 1), '"7"', "Enter commits the local edit.")
+          is(locals:GetCellValue(0, 2), "string", "Editing a value refreshes its type.")
         end
       end
       ide.GetTextFromUser = prompt

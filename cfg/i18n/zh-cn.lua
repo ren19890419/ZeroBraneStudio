@@ -1,6 +1,9 @@
 return {
   ["&Locals"] = "局部变量", -- src\editor\menu_project.lua
   ["Locals"] = "局部变量", -- src\editor\debugger.lua
+  ["Name"] = "名称", -- src\editor\debugger.lua
+  ["Value"] = "值", -- src\editor\debugger.lua
+  ["Type"] = "类型", -- src\editor\debugger.lua
   ["View local variables in the selected stack frame"] = "查看所选调用帧中的局部变量", -- src\editor\menu_project.lua
   ["Pause execution to inspect local variables."] = "暂停执行后即可查看局部变量。", -- src\editor\debugger.lua
   ["No local variables."] = "当前调用帧没有局部变量。", -- src\editor\debugger.lua
