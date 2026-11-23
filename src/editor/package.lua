@@ -465,6 +465,7 @@ function ide:GetProjectTree() return self.filetree.projtreeCtrl end
 function ide:GetOutlineTree() return self.outline.outlineCtrl end
 function ide:GetWatch() return self.debugger and self.debugger.watchCtrl end
 function ide:GetStack() return self.debugger and self.debugger.stackCtrl end
+function ide:GetLocals() return self.debugger and self.debugger.localsCtrl end
 
 function ide:GetTextFromUser(message, caption, value)
   local dlg = wx.wxTextEntryDialog(self.frame, message, caption, value)

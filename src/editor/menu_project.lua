@@ -45,6 +45,7 @@ local debugMenu = ide:MakeMenu {
   { },
   { ID_DEBUGWATCHWINDOW, TR("&Watch Window")..KSC(ID_DEBUGWATCHWINDOW), TR("View the watch window") },
   { ID_DEBUGCALLSTACK, TR("&Stack Window")..KSC(ID_DEBUGCALLSTACK), TR("View the stack window") },
+  { ID_DEBUGLOCALS, TR("&Locals")..KSC(ID_DEBUGLOCALS), TR("View local variables in the selected stack frame") },
   { },
   { ID_ATTACHDEBUG, TR("&Start Debugger Server")..KSC(ID_ATTACHDEBUG), TR("Allow external process to start debugging"), wx.wxITEM_CHECK },
   { ID_DETACHDEBUG, TR("Detach &Process")..KSC(ID_DETACHDEBUG), TR("Stop debugging and continue running the process") },
@@ -531,6 +532,7 @@ frame:Connect(ID_BREAK, wx.wxEVT_UPDATE_UI,
 local debugWindows = {
   [ID_DEBUGWATCHWINDOW] = ide.GetWatch,
   [ID_DEBUGCALLSTACK] = ide.GetStack,
+  [ID_DEBUGLOCALS] = ide.GetLocals,
 }
 local function getDebugWindow(id)
   if not ide:GetDebugger():IsConnected() then return end

@@ -102,6 +102,8 @@ ok(projectMenu and projectMenu:FindItem(ID.STARTDEBUG) == nil, "Start Debugging 
 ok(debugMenu and ID.DEBUGWATCHWINDOW ~= nil and debugMenu:FindItem(ID.DEBUGWATCHWINDOW) ~= nil
   and ID.DEBUGCALLSTACK ~= nil and debugMenu:FindItem(ID.DEBUGCALLSTACK) ~= nil,
   "Debug menu provides Watch Window and Call Stack commands.")
+ok(debugMenu and ID.DEBUGLOCALS ~= nil and debugMenu:FindItem(ID.DEBUGLOCALS) ~= nil,
+  "Debug menu provides the Locals window.")
 
 local at = ide:GetAccelerators()
 ok(next(at) ~= nil, "One or more accelerator is set in the accelerator table.")

@@ -122,6 +122,46 @@ function debugger:updateWatchesSync(onlyitem)
 end
 
 local callData = {}
+local localValues = {}
+
+local function appendLocalValue(ctrl, parent, name, value, params)
+  local label = fixUTF8(("%s = %s"):format(tostring(name), serialize(value, params)))
+  local item = ctrl:AppendItem(parent, label, image.LOCAL)
+  if type(value) == "table" and next(value) ~= nil then
+    localValues[item:GetValue()] = value
+    ctrl:SetItemHasChildren(item, true)
+  end
+end
+
+function debugger:renderLocals(message)
+  local ctrl = self.localsCtrl
+  if not ctrl then return end
+
+  ctrl:Freeze()
+  ctrl:DeleteAllItems()
+  localValues = {}
+  local root = ctrl:AddRoot(TR("Locals"))
+  local frame = self.localsStack and self.localsStack[self.localsFrame or 1]
+  local values = type(frame) == "table" and frame[2]
+  if type(values) == "table" and next(values) ~= nil then
+    local params = self:GetDataOptions({maxlevel=1})
+    for name, value in pairs(values) do
+      if type(value) == "table" then appendLocalValue(ctrl, root, name, value[1], params) end
+    end
+    ctrl:SortChildren(root)
+  else
+    ctrl:AppendItem(root, message or (self.localsStack and TR("No local variables.")
+      or TR("Pause execution to inspect local variables.")))
+  end
+  ctrl:Thaw()
+end
+
+function debugger:resetLocals()
+  self.localsFrame = nil
+  if not self.localsStack then return end
+  self.localsStack = nil
+  self:renderLocals()
+end
 
 function debugger:updateStackSync()
   local debugger = self
@@ -129,8 +169,17 @@ function debugger:updateStackSync()
   local pane = ide.frame.uimgr:GetPane("stackpanel")
   local shown = stackCtrl and (pane:IsOk() and pane:IsShown() or not pane:IsOk() and stackCtrl:IsShown())
   local canupdate = debugger.server and not debugger.running and not debugger.scratchpad
-  if shown and canupdate then
-    local stack, _, err = debugger:stack(debugger:GetDataOptions({maxlength=false}))
+  if not canupdate then return end
+  if not shown and not (debugger.localsCtrl and ide:IsWindowShown(debugger.localsCtrl)) then
+    debugger.needrefresh.stack = true
+    return
+  end
+
+  local stack, _, err = debugger:stack(debugger:GetDataOptions({maxlength=false}))
+  if not debugger.server or debugger ~= ide:GetDebugger() then return end
+  debugger.localsStack = stack or {}
+  debugger:renderLocals(err and TR("Could not read local variables."))
+  if shown then
     if not stack or #stack == 0 then
       stackCtrl:DeleteAll()
       if err then -- report an error if any
@@ -147,7 +196,8 @@ function debugger:updateStackSync()
 
     local root = stackCtrl:AddRoot("Stack")
     callData = {} -- reset call cache
-    for _,frame in ipairs(stack) do
+    local selected
+    for index,frame in ipairs(stack) do
       -- check if the stack includes expected structures
       if type(frame) ~= "table" or type(frame[1]) ~= "table" or #frame[1] < 7 then break end
 
@@ -174,7 +224,8 @@ function debugger:updateStackSync()
       local callitem = stackCtrl:AppendItem(root, text, image.STACK)
 
       -- register call data to provide stack navigation
-      callData[callitem:GetValue()] = { call[2], call[4] }
+      callData[callitem:GetValue()] = { call[2], call[4], index }
+      if index == (debugger.localsFrame or 1) then selected = callitem end
 
       -- add the local variables to the call stack item
       for name,val in pairs(type(frame[2]) == "table" and frame[2] or {}) do
@@ -201,11 +252,15 @@ function debugger:updateStackSync()
       stackCtrl:SortChildren(callitem)
       stackCtrl:Expand(callitem)
     end
-    stackCtrl:EnsureVisible(stackCtrl:GetFirstChild(root))
+    local current = selected or stackCtrl:GetFirstChild(root)
+    if current:IsOk() then
+      stackCtrl:SelectItem(current)
+      stackCtrl:EnsureVisible(current)
+    end
     stackCtrl:Thaw()
     stackCtrl:SetScrollPos(wx.wxHORIZONTAL, 0, true)
     debugger.needrefresh.stack = false
-  elseif not shown and canupdate then
+  else
     debugger.needrefresh.stack = true
   end
 end
@@ -667,6 +722,7 @@ function debugger:Listen(start)
           editormap = {},
           runtocursor = nil,
       }))
+      debugger:resetLocals()
 
       if PackageEventHandle("onDebuggerPreLoad", debugger, options) == false then return end
 
@@ -878,6 +934,7 @@ end
 function debugger:exec(command, func)
   local debugger = self
   if debugger.server and not debugger.running then
+    debugger:resetLocals()
     copas.addthread(function()
         local debugger = debugger
         -- execute a custom function (if any) in the context of this thread
@@ -1345,6 +1402,18 @@ local function debuggerCreateStackWindow()
       end
     end)
 
+  stackCtrl:Connect(wx.wxEVT_COMMAND_TREE_SEL_CHANGED, function(event)
+    local debugger = ide:GetDebugger()
+    local item = event:GetItem()
+    while item:IsOk() and not stackCtrl:IsFrame(item) do item = stackCtrl:GetItemParent(item) end
+    local coords = item:IsOk() and callData[item:GetValue()]
+    if debugger.localsStack and coords and (debugger.localsFrame or 1) ~= coords[3] then
+      debugger.localsFrame = coords[3]
+      debugger:renderLocals()
+    end
+    event:Skip()
+  end)
+
   -- register navigation callback
   stackCtrl:Connect(wx.wxEVT_LEFT_DCLICK, function (event)
     local item_id = stackCtrl:HitTest(event:GetPosition())
@@ -1698,6 +1767,34 @@ end
 debuggerCreateStackWindow()
 debuggerCreateWatchWindow()
 
+do
+  local ctrl = ide:CreateTreeCtrl(ide.frame, wx.wxID_ANY, wx.wxDefaultPosition, wx.wxSize(width, height),
+    wx.wxTR_LINES_AT_ROOT + wx.wxTR_HAS_BUTTONS + wx.wxTR_SINGLE + wx.wxTR_HIDE_ROOT + wx.wxNO_BORDER)
+  local debugger = ide:GetDebugger()
+  debugger.localsCtrl = ctrl
+  ctrl:SetImageList(debugger.imglist)
+  ide:AddPanelFlex(ide:GetOutputNotebook(), ctrl, "localspanel", TR("Locals"))
+  debugger:renderLocals()
+
+  ctrl:Connect(wx.wxEVT_COMMAND_TREE_ITEM_EXPANDING, function(event)
+    local item = event:GetItem()
+    local key = item:GetValue()
+    local values = localValues[key]
+    if values then
+      localValues[key] = nil
+      local params = ide:GetDebugger():GetDataOptions({maxlevel=1})
+      for name, value in pairs(values) do appendLocalValue(ctrl, item, name, value, params) end
+      ctrl:SortChildren(item)
+    end
+    event:Skip()
+  end)
+  ctrl:Connect(wx.wxEVT_SET_FOCUS, function(event)
+    local debugger = ide:GetDebugger()
+    if not debugger.localsStack then debugger:updateStack() end
+    event:Skip()
+  end)
+end
+
 ----------------------------------------------
 -- public api
 
@@ -1744,6 +1841,7 @@ end
 
 function debugger:teardown()
   local debugger = self
+  debugger:resetLocals()
   if debugger.server then
     local lines = TR("traced %d instruction", debugger.stats.line):format(debugger.stats.line)
     ide:Print(TR("Debugging session completed (%s)."):format(lines))

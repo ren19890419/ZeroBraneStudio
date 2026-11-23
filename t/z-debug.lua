@@ -99,6 +99,13 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
         is(val, "3", "Asynchronous expression evaluation in debugger returns expected result.")
       end)
     debugger:Wait()
+  elseif command == 2 and ID.DEBUGLOCALS then
+    dispatch(ID.DEBUGLOCALS)
+    debugger:Wait()
+    local locals = ide:GetLocals()
+    local item = locals:GetFirstChild(locals:GetRootItem())
+    ok(item:IsOk() and locals:GetItemText(item) == "a = 3",
+      "Locals shows the paused frame's variable value.")
   end
   command = command + 1
   if cmd == "Restart" then
