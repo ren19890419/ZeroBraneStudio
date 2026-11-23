@@ -535,12 +535,14 @@ function debugger:shell(expression, isstatement)
   end
 end
 
-function debugger:stoppedAtBreakpoint(file, line)
-  -- if this document can be activated and the current line has a breakpoint
+function debugger:stoppedAtBreakpoint(file, line, runTo)
   local editor = self:ActivateDocument(file, line, activate.CHECKONLY)
   if not editor then return false end
 
   local current = editor:MarkerNext(0, CURRENT_LINE_MARKER_VALUE)
+  -- The program is already at the requested line, so it must not execute it.
+  local target = runTo and runTo.line == current + 1 and ide:FindDocument(runTo.filename)
+  if target and editor:GetId() == target:GetEditor():GetId() then return true end
   local breakpoint = editor:MarkerNext(current, BREAKPOINT_MARKER_VALUE)
   return breakpoint ~= wx.wxNOT_FOUND and breakpoint == current
 end
@@ -641,8 +643,10 @@ function debugger:Listen(start)
       -- debugger.options may not be set, but runonstart is still configured.
       local launch = debugger.launch
       if launch and launch.pid ~= ide:GetLaunchedProcess() then launch = nil end
+      local runTo = launch and launch.runTo
+      if runTo then launch.runTo = nil end
       local stopOnEntry = launch and launch.stopOnEntry
-      local runstart = options.runstart
+      local runstart = runTo and true or options.runstart
       if stopOnEntry then runstart = false
       elseif runstart == nil then runstart = ide.config.debugger.runonstart end
 
@@ -729,7 +733,8 @@ function debugger:Listen(start)
             ..":\n"..err)
           return debugger:terminate()
         elseif runstart and not debugger.scratchpad then
-          if debugger:stoppedAtBreakpoint(file, line) then
+          if runTo then file, line = file or options.startwith, line or 0 end
+          if debugger:stoppedAtBreakpoint(file, line, runTo) then
             debugger:ActivateDocument(file, line)
             runstart = false
           end
@@ -755,7 +760,7 @@ function debugger:Listen(start)
           local file = (debugger:mapRemotePath(basedir, file, line or 0, activate.CHECKONLY)
             or file or startfile)
 
-          if debugger:stoppedAtBreakpoint(file, line or 0) then
+          if debugger:stoppedAtBreakpoint(file, line or 0, runTo) then
             debugger:ActivateDocument(file, line or 0)
             runstart = false
           end
@@ -816,7 +821,12 @@ function debugger:Listen(start)
         debugger.scratchpad.updated = true
       elseif runstart then
         ClearAllCurrentLineMarkers()
-        debugger:Run()
+        local target = runTo and ide:FindDocument(runTo.filename)
+        if target then
+          debugger:RunTo(target:GetEditor(), runTo.line)
+        else
+          debugger:Run()
+        end
       end
 
       -- request attention if the debugging is stopped

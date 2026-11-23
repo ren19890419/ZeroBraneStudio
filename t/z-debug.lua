@@ -18,7 +18,7 @@ pkg.onAppClose = function() FileRemove(debugfile) end
 ok(wx.wxFileExists(debugfile), "File created before starting debugging.")
 local editor = ide:ActivateFile(debugfile)
 local breakpointLine = 10
-editor:BreakpointToggle(breakpointLine - 1)
+editor:BreakpointToggle(breakpointLine - 1, true)
 
 ide:GetMenuBar():Check(ID.CLEAROUTPUTENABLE, false)
 local runonstart = ide.config.debugger.runonstart
@@ -31,8 +31,14 @@ local function isEnabled(id)
 end
 ok(isEnabled(ID.STEP), "Step Into is enabled before debugging starts.")
 ok(isEnabled(ID.STEPOVER), "Step Over is enabled before debugging starts.")
+ok(isEnabled(ID.RUNTO), "Run To Cursor is enabled before debugging starts.")
 local function stepInto()
   frame:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.STEP))
+end
+local function runToCursor(line)
+  ide:GetDocument(editor):SetActive()
+  editor:GotoLine(line - 1)
+  frame:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.RUNTO))
 end
 stepInto()
 local firstpid = ide:GetLaunchedProcess()
@@ -45,13 +51,14 @@ end
 
 local commands = {
   {debugfile, 4, "Step"},
-  {debugfile, 5, "RunTo", {editor, 9}},
+  {debugfile, 5, "RunTo", {9}},
   {debugfile, 9, "Over"},
   {debugfile, breakpointLine, "Restart"},
-  {debugfile, breakpointLine, "Stop"},
+  {debugfile, breakpointLine, "StartRunTo"},
+  {debugfile, 5, "Stop"},
 }
 local command = 1
-local restarting, othereditor
+local restarting, startingRunTo, othereditor
 
 -- wait for the connection to be initiated
 pkg.onDebuggerActivate = function(self, debugger, file, line)
@@ -102,13 +109,30 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
       stepInto()
     elseif cmd == "Over" then
       frame:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.STEPOVER))
+    elseif cmd == "RunTo" then
+      runToCursor(unpack(args))
+    elseif cmd == "StartRunTo" then
+      startingRunTo = true
+      ide:GetOutput():AfterProcessExit(ide:GetLaunchedProcess(), function()
+        startingRunTo = false
+        ide.config.debugger.runonstart = false
+        runToCursor(5)
+        local started = ide:GetLaunchedProcess() ~= nil
+        ok(started, "Run To Cursor launches a new debug process.")
+        if started then
+          editor:GotoLine(breakpointLine - 1)
+        else
+          pkg.onDebuggerClose()
+        end
+      end)
+      debugger:Stop()
     else
       debugger[cmd](debugger, unpack(args or {}))
     end
   end
 end
 pkg.onDebuggerClose = function()
-  if restarting then return end
+  if restarting or startingRunTo then return end
   local otherdoc = ide:IsValidCtrl(othereditor) and ide:GetDocument(othereditor)
   if otherdoc then otherdoc:Close() end
   local doc = ide:IsValidCtrl(editor) and ide:GetDocument(editor)
