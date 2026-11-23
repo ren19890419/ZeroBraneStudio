@@ -5,6 +5,10 @@ return {
   ["Pause execution to inspect local variables."] = "暂停执行后即可查看局部变量。", -- src\editor\debugger.lua
   ["No local variables."] = "当前调用帧没有局部变量。", -- src\editor\debugger.lua
   ["Could not read local variables."] = "无法读取局部变量。", -- src\editor\debugger.lua
+  ["Edit Value"] = "修改变量值", -- src\editor\debugger.lua
+  ["Enter a Lua expression for the new value of '%s'."] = "输入 Lua 表达式来设置“%s”的新值。", -- src\editor\debugger.lua
+  ["Could not change the local variable: %s"] = "无法修改局部变量：%s", -- src\editor\debugger.lua
+  ["The debug client does not support editing local variables."] = "当前调试客户端不支持编辑局部变量。", -- lualibs\mobdebug\mobdebug.lua
   ["%s event failed: %s"] = "%s 事件失败: %s", -- src\editor\package.lua
   ["%s%% formatted..."] = "%s%% 格式化后...", -- src\editor\print.lua
   ["%s%% loaded..."] = "%s%% 加载后...", -- src\editor\commands.lua

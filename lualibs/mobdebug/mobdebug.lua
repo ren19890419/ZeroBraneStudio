@@ -108,7 +108,7 @@ local socket = require "socket"
 local coro_debugger
 local coro_debugee
 local coroutines = {}; setmetatable(coroutines, {__mode = "k"}) -- "weak" keys
-local events = { BREAK = 1, WATCH = 2, RESTART = 3, STACK = 4 }
+local events = { BREAK = 1, WATCH = 2, RESTART = 3, STACK = 4, SETLOCAL = 5 }
 local breakpoints = {}
 local watches = {}
 local lastsource
@@ -461,6 +461,54 @@ local function capture_vars(level, thread)
   return vars
 end
 
+local function set_local(request)
+  if type(request) ~= "table" or type(request.frame) ~= "number"
+  or request.frame < 1 or request.frame > 100 or request.frame % 1 ~= 0
+  or type(request.name) ~= "string" or not request.name:match("^[_%a][_%w]*$")
+  or type(request.path) ~= "table" or type(request.expression) ~= "string" then
+    return false, "Invalid local variable edit."
+  end
+
+  -- Match the frame order reported by stack(3) from the debug hook.
+  local level = request.frame + 2
+  if not debug.getinfo(level, "f") then return false, "The selected stack frame is unavailable." end
+  local scope, slot, target = {}
+  local index = 1
+  while true do
+    local name, value = debug.getlocal(level, index)
+    if not name then break end
+    scope[name] = true
+    if name == request.name then slot, target = index, value end
+    index = index + 1
+  end
+  if not slot then return false, "The local variable is unavailable." end
+
+  local key
+  for i, field in ipairs(request.path) do
+    local kind = type(field)
+    if type(target) ~= "table" or (kind ~= "string" and kind ~= "number" and kind ~= "boolean")
+    or field ~= field then return false, "The table field is unavailable." end
+    if i == #request.path then key = field else target = rawget(target, field) end
+  end
+
+  local evaluate, err = mobdebug.loadstring("return (" .. request.expression .. "\n)")
+  if not evaluate then return false, err end
+  local env = capture_vars(request.frame + 1)
+  local mt = getmetatable(env)
+  local globals = mt.__index
+  mt.__index = function(_, name) if not scope[name] then return globals[name] end end
+  setfenv(evaluate, env)
+  local ok, value = pcall(evaluate, unpack(rawget(env, '...') or {}))
+  if not ok then return false, type(value) == "string" and value or "The expression failed." end
+
+  if key ~= nil then
+    rawset(target, key, value)
+  elseif not debug.setlocal(level, slot, value) then
+    return false, "The local variable is unavailable."
+  end
+  return true
+end
+
 local function stack_depth(start_depth)
   for i = start_depth, 0, -1 do
     if debug.getinfo(i, "l") then return i+1 end
@@ -669,14 +717,14 @@ local function debug_hook(event, line)
 
     if is_pending(server) then handle_breakpoint(server) end
 
-    local vars, status, res
+    local vars, status, res, request
     if (watchescnt > 0) then
       vars = capture_vars(1)
       for index, value in pairs(watches) do
         setfenv(value, vars)
         local ok, fired = pcall(value)
         if ok and fired then
-          status, res = cororesume(coro_debugger, events.WATCH, vars, file, line, index)
+          status, res, request = cororesume(coro_debugger, events.WATCH, vars, file, line, index)
           break -- any one watch is enough; don't check multiple times
         end
       end
@@ -696,14 +744,25 @@ local function debug_hook(event, line)
       vars = vars or capture_vars(1)
       step_into = false
       step_over = false
-      status, res = cororesume(coro_debugger, events.BREAK, vars, file, line)
+      status, res, request = cororesume(coro_debugger, events.BREAK, vars, file, line)
     end
 
-    -- handle 'stack' command that provides stack() information to the debugger
-    while status and res == 'stack' do
-      -- resume with the stack trace and variables
+    -- Read and edit variables in the paused program's coroutine.
+    while status and (res == 'stack' or res == 'setlocal') do
       if vars then restore_vars(vars) end -- restore vars so they are reflected in stack values
-      status, res = cororesume(coro_debugger, events.STACK, stack(3), file, line)
+      if res == 'stack' then
+        status, res, request = cororesume(coro_debugger, events.STACK, stack(3), file, line)
+      else
+        local ok, err = set_local(request)
+        -- A caller's edited local can also be an upvalue of the paused frame.
+        -- Refresh the evaluation environment in place so it cannot restore the old value.
+        if vars then
+          local current = capture_vars(1)
+          for name in pairs(vars) do rawset(vars, name, nil) end
+          for name, value in pairs(current) do rawset(vars, name, value) end
+        end
+        status, res, request = cororesume(coro_debugger, events.SETLOCAL, ok, err)
+      end
     end
 
     -- need to recheck once more as resume after 'stack' command may
@@ -845,6 +904,21 @@ local function debugger_loop(sev, svars, sfile, sline)
         end
       else
         server:send("400 Bad Request\n")
+      end
+    elseif command == "SETLOCAL" then
+      local data = line:match("^SETLOCAL%s+(.+)$")
+      local decoded, request
+      if data then decoded, request = serpent.load(data) end
+      local ok, err = false, "Local variables can only be edited in a paused stack frame."
+      if decoded and seen_hook then
+        local ev, status, message = coroyield("setlocal", request)
+        if ev == events.SETLOCAL then ok, err = status, message end
+      end
+      if ok then
+        server:send("200 OK 0\n")
+      else
+        server:send("401 Error in Expression " .. tostring(#err) .. "\n")
+        server:send(err)
       end
     elseif command == "LOAD" then
       local _, _, size, name = string.find(line, "^[A-Z]+%s+(%d+)%s+(%S.-)%s*$")
@@ -1356,12 +1430,14 @@ local function handle(params, client, options)
         print("Error: watch expression at index " .. index .. " [" .. exp .. "] not removed")
       end
     end
-  elseif command == "eval" or command == "exec"
+  elseif command == "eval" or command == "exec" or command == "setlocal"
       or command == "load" or command == "loadstring"
       or command == "reload" then
     local _, _, exp = string.find(params, "^[a-z]+%s+(.+)$")
     if exp or (command == "reload") then
-      if command == "eval" or command == "exec" then
+      if command == "setlocal" then
+        client:send("SETLOCAL " .. exp .. "\n")
+      elseif command == "eval" or command == "exec" then
         exp = exp:gsub("\r?\n", "\r"..SAFEWS) -- convert new lines, so the fragment can be passed as one line
         if command == "eval" then exp = "return " .. exp end
         client:send("EXEC " .. exp .. "\n")
@@ -1441,6 +1517,8 @@ local function handle(params, client, options)
           local res = client:receive(len)
           print("Error in expression: " .. res)
           return nil, nil, res
+        elseif command == "setlocal" and params == "400 Bad Request" then
+          return nil, nil, "The debug client does not support editing local variables."
         else
           print("Unknown error")
           return nil, nil, "Debugger error: unexpected response after EXEC/LOAD '" .. params .. "'"

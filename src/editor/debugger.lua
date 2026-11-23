@@ -122,14 +122,49 @@ function debugger:updateWatchesSync(onlyitem)
 end
 
 local callData = {}
-local localValues = {}
+local localItems = {}
 
 local function appendLocalValue(ctrl, parent, name, value, params)
-  local label = fixUTF8(("%s = %s"):format(tostring(name), serialize(value, params)))
+  local key = tostring(name)
+  local label = fixUTF8(("%s = %s"):format(key, serialize(value, params)))
   local item = ctrl:AppendItem(parent, label, image.LOCAL)
+  local row = {key = name, label = key, value = value}
+  local parentRow = localItems[parent:GetValue()]
+  if not parentRow then
+    if type(name) == "string" and name:match("^[_%a][_%w]*$") then
+      row.name, row.path = name, {}
+    end
+  elseif parentRow.name then
+    local kind = type(name)
+    if kind == "string" or kind == "boolean" or kind == "number" then
+      row.name, row.path = parentRow.name, {unpack(parentRow.path)}
+      row.path[#row.path + 1] = name
+    end
+  end
+  localItems[item:GetValue()] = row
   if type(value) == "table" and next(value) ~= nil then
-    localValues[item:GetValue()] = value
     ctrl:SetItemHasChildren(item, true)
+  end
+end
+
+local function restoreLocalSelection(ctrl, request, expanded)
+  local path = {request.name, unpack(request.path)}
+  local root = ctrl:GetRootItem()
+  local parent = root
+  for index, key in ipairs(path) do
+    local child = ctrl:GetFirstChild(parent)
+    while child:IsOk() do
+      local row = localItems[child:GetValue()]
+      if row and row.key == key then break end
+      child = ctrl:GetNextSibling(child)
+    end
+    if not child:IsOk() then break end
+    parent = child
+    if (index < #path or expanded) and ctrl:ItemHasChildren(parent) then ctrl:Expand(parent) end
+  end
+  if parent:GetValue() ~= root:GetValue() then
+    ctrl:SelectItem(parent)
+    ctrl:EnsureVisible(parent)
   end
 end
 
@@ -139,7 +174,7 @@ function debugger:renderLocals(message)
 
   ctrl:Freeze()
   ctrl:DeleteAllItems()
-  localValues = {}
+  localItems = {}
   local root = ctrl:AddRoot(TR("Locals"))
   local frame = self.localsStack and self.localsStack[self.localsFrame or 1]
   local values = type(frame) == "table" and frame[2]
@@ -1778,15 +1813,42 @@ do
 
   ctrl:Connect(wx.wxEVT_COMMAND_TREE_ITEM_EXPANDING, function(event)
     local item = event:GetItem()
-    local key = item:GetValue()
-    local values = localValues[key]
-    if values then
-      localValues[key] = nil
+    local row = localItems[item:GetValue()]
+    if row and type(row.value) == "table" and ctrl:GetChildrenCount(item, false) == 0 then
       local params = ide:GetDebugger():GetDataOptions({maxlevel=1})
-      for name, value in pairs(values) do appendLocalValue(ctrl, item, name, value, params) end
+      for name, value in pairs(row.value) do appendLocalValue(ctrl, item, name, value, params) end
       ctrl:SortChildren(item)
     end
     event:Skip()
+  end)
+  ctrl:Connect(wx.wxEVT_COMMAND_TREE_ITEM_ACTIVATED, function(event)
+    local item = event:GetItem()
+    if not item:IsOk() then item = ctrl:GetSelection() end
+    local row = item:IsOk() and localItems[item:GetValue()]
+    local debugger = ide:GetDebugger()
+    local snapshot, frame = debugger.localsStack, debugger.localsFrame or 1
+    if not row or not row.name or not snapshot or not debugger.server or debugger.running
+    or (debugger.options or {}).noeval then event:Skip() return end
+
+    local expanded = ctrl:IsExpanded(item)
+    local original = fixUTF8(serialize(row.value, debugger:GetDataOptions({maxlevel=false, maxlength=false})))
+    local value = ide:GetTextFromUser(TR("Enter a Lua expression for the new value of '%s'."):format(row.label),
+      TR("Edit Value"), original)
+    -- The modal dialog may have outlived the pause or the selected frame.
+    if not value or value == original or debugger ~= ide:GetDebugger() or not debugger.server
+    or debugger.running or debugger.localsStack ~= snapshot or (debugger.localsFrame or 1) ~= frame then return end
+
+    local request = {frame = frame, name = row.name, path = row.path, expression = value}
+    copas.addthread(function()
+      local _, _, err = debugger:handle("setlocal " .. mobdebug.line(request, {comment=false}))
+      if debugger ~= ide:GetDebugger() or not debugger.server then return end
+      if err then ide:ReportError(TR("Could not change the local variable: %s"):format(fixUTF8(TR(err)))) end
+      debugger:updateStackSync()
+      if debugger == ide:GetDebugger() and debugger.localsStack and (debugger.localsFrame or 1) == frame then
+        restoreLocalSelection(ctrl, request, expanded)
+      end
+      debugger:updateWatchesSync()
+    end)
   end)
   ctrl:Connect(wx.wxEVT_SET_FOCUS, function(event)
     local debugger = ide:GetDebugger()

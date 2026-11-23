@@ -106,6 +106,21 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     local item = locals:GetFirstChild(locals:GetRootItem())
     ok(item:IsOk() and locals:GetItemText(item) == "a = 3",
       "Locals shows the paused frame's variable value.")
+    if item:IsOk() then
+      local prompt, report = ide.GetTextFromUser, ide.ReportError
+      local editError
+      ide.GetTextFromUser = function() return "a + 4" end
+      ide.ReportError = function(_, message) editError = message end
+      locals:SelectItem(item)
+      local event = wx.wxTreeEvent(wx.wxEVT_COMMAND_TREE_ITEM_ACTIVATED, locals:GetId())
+      event:SetEventObject(locals)
+      locals:ProcessEvent(event)
+      debugger:Wait()
+      ide.GetTextFromUser, ide.ReportError = prompt, report
+      local updated = locals:GetFirstChild(locals:GetRootItem())
+      ok(not editError and updated:IsOk() and locals:GetItemText(updated) == "a = 7",
+        "Activating a local commits its new value to the paused frame.", editError)
+    end
   end
   command = command + 1
   if cmd == "Restart" then
