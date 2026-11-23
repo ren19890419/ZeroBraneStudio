@@ -130,6 +130,7 @@ local function treeSetRoot(tree,rootdir)
   if not wx.wxDirExists(rootdir) then return end
   tree:DeleteAllItems()
 
+  tree.rootDirectory, tree.rootSuffix = rootdir, nil
   local root_id = tree:AddRoot(rootdir, image.DIRECTORY)
   tree:SetItemHasChildren(root_id, true) -- make sure that the item can expand
   tree:Expand(root_id) -- this will also populate the tree
@@ -141,7 +142,7 @@ end
 
 local function findItem(tree, match)
   local node = tree:GetRootItem()
-  local label = tree:GetItemText(node)
+  local label = tree.rootDirectory or tree:GetItemText(node)
 
   local s, e
   if iscaseinsensitive then
@@ -205,15 +206,25 @@ local function treeSetConnectorsAndIcons(tree)
       or MergeFullPath(ide:GetProject(), match))
   end
 
+  function tree:SetRootSuffix(suffix)
+    local root = self:GetRootItem()
+    if not root:IsOk() or not self.rootDirectory or self.rootSuffix == suffix then return end
+    self.rootSuffix = suffix
+    self:SetItemText(root, self.rootDirectory..(suffix or ""))
+  end
+
+  local function name(item)
+    return tree:IsRoot(item) and tree.rootDirectory or tree:GetItemText(item)
+  end
+
   function tree:GetItemFullName(item_id)
-    local tree = self
-    local str = tree:GetItemText(item_id)
+    local str = name(item_id)
     local cur = str
 
     while (#cur > 0) do
       item_id = tree:GetItemParent(item_id)
       if not item_id:IsOk() then break end
-      cur = tree:GetItemText(item_id)
+      cur = name(item_id)
       if cur and #cur > 0 then str = MergeFullPath(cur, str) end
     end
     -- as root may already include path separator, normalize the path
@@ -839,6 +850,8 @@ local function treeSetConnectorsAndIcons(tree)
       -- edited the root element; set the new project directory if needed
       local cancelled = event:IsEditCancelled()
       if tree:IsRoot(itemsrc) then
+        local suffix = tree.rootSuffix
+        if suffix and label:sub(-#suffix) == suffix then label = label:sub(1, -#suffix-1) end
         if not cancelled and wx.wxDirExists(label) then
           ide:SetProject(label)
         end
