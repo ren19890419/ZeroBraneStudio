@@ -226,6 +226,14 @@ function OutputSetCallbacks(pid, proc, callback, endcallback)
   customprocs[pid] = {proc=proc, endcallback=endcallback}
 end
 
+-- Run the callback after the process and its output have been cleaned up.
+function out:AfterProcessExit(pid, callback)
+  local process = customprocs[pid]
+  if not process or not process.uid then return false end
+  process.afterexit = callback
+  return true
+end
+
 function CommandLineRun(cmd,wdir,tooutput,nohide,stringcallback,uid,endcallback)
   if (not cmd) then return end
 
@@ -379,23 +387,28 @@ out:Connect(wx.wxEVT_END_PROCESS, function(event)
 
       -- if this was started with uid (`CommandLineRun`), then it needs additional processing
       if customprocs[pid].uid then
-        -- delete markers and set focus to the editor if there is an input marker
-        if out:MarkerPrevious(out:GetLineCount(), PROMPT_MARKER_VALUE) > wx.wxNOT_FOUND then
-          out:MarkerDeleteAll(PROMPT_MARKER)
-          local editor = ide:GetEditor()
-          -- check if editor still exists; it may not if the window is closed
-          if editor then editor:SetFocus() end
+        local current = ide:GetLaunchedProcess()
+        if not current or current == pid then
+          -- delete markers and set focus to the editor if there is an input marker
+          if out:MarkerPrevious(out:GetLineCount(), PROMPT_MARKER_VALUE) > wx.wxNOT_FOUND then
+            out:MarkerDeleteAll(PROMPT_MARKER)
+            local editor = ide:GetEditor()
+            -- check if editor still exists; it may not if the window is closed
+            if editor then editor:SetFocus() end
+          end
+          unHideWindow(0)
+          ide:SetLaunchedProcess(nil)
+          nameTab(out, TR("Output"))
         end
-        unHideWindow(0)
-        ide:SetLaunchedProcess(nil)
-        nameTab(out, TR("Output"))
         DisplayOutputLn(TR("Program completed in %.2f seconds (pid: %d).")
           :format(ide:GetTime() - customprocs[pid].started, pid))
       end
       -- this protects against the object referenced in wxProcess being collected
       -- before the wxProcess itself is collected, which may cause a crash on exit
       if customprocs[pid].proc then customprocs[pid].proc:Detach() end
+      local afterexit = customprocs[pid].afterexit
       customprocs[pid] = nil
+      if afterexit then ide:DoWhenIdle(afterexit) end
     end
   end)
 

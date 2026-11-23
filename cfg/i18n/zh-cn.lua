@@ -243,6 +243,8 @@ return {
   ["Replaced %d instance."] = "替换 %d 个实例", -- src\editor\findreplace.lua
   ["Replaced an invalid UTF8 character with %s."] = "替换无效的UTF8字符用 %s", -- src\editor\commands.lua
   ["Reset to default layout"] = "重置默认布局", -- src\editor\menu_view.lua
+  ["Restart Debugging"] = "重新启动调试", -- src\editor\menu_project.lua
+  ["Restart the current debugging session"] = "重新启动当前调试会话", -- src\editor\menu_project.lua
   ["Run As Scratchpad"] = "以Scratchpad运行", -- src\editor\menu_project.lua
   ["Run To Cursor"] = "运行到光标位置", -- src\editor\menu_project.lua, src\editor\editor.lua
   ["Run as Scratchpad"] = "以Scratchpad运行", -- src\editor\toolbar.lua

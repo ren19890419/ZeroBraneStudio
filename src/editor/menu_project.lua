@@ -23,6 +23,7 @@ local debugMenu = ide:MakeMenu {
   { ID_ATTACHDEBUG, TR("&Start Debugger Server")..KSC(ID_ATTACHDEBUG), TR("Allow external process to start debugging"), wx.wxITEM_CHECK },
   { },
   { ID_STOPDEBUG, TR("S&top Process")..KSC(ID_STOPDEBUG), TR("Stop the currently running process") },
+  { ID_RESTARTDEBUG, TR("Restart Debugging")..KSC(ID_RESTARTDEBUG), TR("Restart the current debugging session") },
   { ID_DETACHDEBUG, TR("Detach &Process")..KSC(ID_DETACHDEBUG), TR("Stop debugging and continue running the process") },
   { ID_STEP, TR("Step &Into")..KSC(ID_STEP), TR("Step into") },
   { ID_STEPOVER, TR("Step &Over")..KSC(ID_STEPOVER), TR("Step over") },
@@ -175,13 +176,12 @@ frame:Connect(ID_PROJECTDIRFROMFILE, wx.wxEVT_UPDATE_UI,
 ----------------------
 -- Interpreter Running
 
-local function getNameToRun(skipcheck)
-  local editor = ide:GetEditor()
-  if not editor then return end
+local function getNameToRun(editor, skipcheck, filename)
+  if not editor and not filename then return end
 
   -- test compile it before we run it, if successful then ask to save
   -- only compile if lua api
-  if editor.spec.apitype and
+  if editor and editor.spec.apitype and
     editor.spec.apitype == "lua" and
     (not skipcheck) and
     (not ide.interpreter.skipcompile) and
@@ -189,9 +189,9 @@ local function getNameToRun(skipcheck)
     return
   end
 
-  local doc = ide:GetDocument(editor)
-  local name = ide:GetProjectStartFile() or doc:GetFilePath()
-  if not SaveIfModified(editor) then return end
+  local doc = editor and ide:GetDocument(editor)
+  local name = filename or ide:GetProjectStartFile() or doc:GetFilePath()
+  if editor and not SaveIfModified(editor) then return end
   if ide.config.editor.saveallonrun then SaveAll(true) end
 
   return wx.wxFileName(name or doc:GetFilePath())
@@ -203,6 +203,7 @@ local function runInterpreter(wfilename, withdebugger)
 
   ClearAllCurrentLineMarkers()
   if not wfilename or not ide.interpreter.frun then return end
+  ide:GetDebugger().launch = nil
   local pid = ide.interpreter:frun(wfilename, withdebugger)
   if pid then OutputEnableInput() end
   ide:SetLaunchedProcess(pid)
@@ -210,7 +211,7 @@ local function runInterpreter(wfilename, withdebugger)
 end
 
 function ProjectRun(skipcheck)
-  local fname = getNameToRun(skipcheck)
+  local fname = getNameToRun(ide:GetEditor(), skipcheck)
   if not fname then return end
   return runInterpreter(fname)
 end
@@ -219,6 +220,30 @@ local debuggers = {
   debug = "require('mobdebug').loop('%s',%d)",
   scratchpad = "require('mobdebug').scratchpad('%s',%d)"
 }
+
+local function sameLaunchContext(launch)
+  return ide.interpreter == launch.interpreter and ide:GetProject() == launch.project
+end
+
+local function startDebugging(fname, debtype)
+  local debugger = ide:GetDebugger()
+  if not debugger:IsListening() then debugger:Listen() end
+  local debcall = debuggers[debtype or "debug"]:format(debugger:GetHostName(), debugger:GetPortNumber())
+  local filename, interpreter, project = fname:GetFullPath(), ide.interpreter, ide:GetProject()
+  local pid = runInterpreter(fname, debcall)
+  if pid and debtype ~= "scratchpad" then
+    local launch = { pid = pid, filename = filename, interpreter = interpreter, project = project }
+    ide:GetDebugger().launch = launch
+    launch.tracked = ide:GetOutput():AfterProcessExit(pid, function()
+      local debugger = ide:GetDebugger()
+      if launch.restart and debugger.launch == launch and not ide:IsExiting()
+      and sameLaunchContext(launch) and not ide:GetLaunchedProcess() and not debugger:IsConnected() then
+        startDebugging(wx.wxFileName(launch.filename))
+      end
+    end)
+  end
+  return pid
+end
 
 function ProjectDebug(skipcheck, debtype)
   local debugger = ide:GetDebugger()
@@ -231,14 +256,36 @@ function ProjectDebug(skipcheck, debtype)
       debugger:Run()
     end
   else
-    if not debugger:IsListening() then debugger:Listen() end
-    local debcall = (debuggers[debtype or "debug"]):
-      format(debugger:GetHostName(), debugger:GetPortNumber())
-    local fname = getNameToRun(skipcheck)
+    local fname = getNameToRun(ide:GetEditor(), skipcheck)
     if not fname then return end
-    return runInterpreter(fname, debcall) -- this may be pid or nil
+    return startDebugging(fname, debtype)
   end
   return true
+end
+
+local function getRestartableLaunch()
+  local debugger = ide:GetDebugger()
+  local launch = debugger.launch
+  if launch and launch.tracked and not launch.restart and not debugger.scratchpad
+  and launch.pid == ide:GetLaunchedProcess() and sameLaunchContext(launch) then
+    return launch
+  end
+end
+
+local function restartDebugging()
+  local launch = getRestartableLaunch()
+  if not launch then return end
+  local doc = ide:FindDocument(launch.filename)
+  if not getNameToRun(doc and doc:GetEditor(), nil, launch.filename) then return end
+  if not wx.wxFileExists(launch.filename) then
+    ide:ReportError(TR("File '%s' no longer exists."):format(launch.filename))
+    return
+  end
+  if getRestartableLaunch() ~= launch then return end
+
+  launch.restart = true
+  ide:GetDebugger():Stop()
+  if ide:GetLaunchedProcess() == launch.pid then launch.restart = nil end
 end
 
 -----------------------
@@ -362,6 +409,10 @@ frame:Connect(ID_STOPDEBUG, wx.wxEVT_UPDATE_UI,
       debugMenu:SetLabel(ID_STOPDEBUG, label..KSC(ID_STOPDEBUG))
     end
   end)
+
+frame:Connect(ID_RESTARTDEBUG, wx.wxEVT_COMMAND_MENU_SELECTED, restartDebugging)
+frame:Connect(ID_RESTARTDEBUG, wx.wxEVT_UPDATE_UI,
+  function(event) event:Enable(getRestartableLaunch() ~= nil) end)
 
 frame:Connect(ID_DETACHDEBUG, wx.wxEVT_COMMAND_MENU_SELECTED,
   function () ide:GetDebugger():detach() end)

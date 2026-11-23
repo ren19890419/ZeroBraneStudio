@@ -663,7 +663,9 @@ function debugger:Listen(start)
       if PackageEventHandle("onDebuggerPreLoad", debugger, options) == false then return end
 
       local editor = ide:GetEditor()
-      local startfile = ide:GetProjectStartFile() or options.startwith
+      local launch = debugger.launch
+      local startfile = launch and launch.pid == ide:GetLaunchedProcess() and launch.filename
+        or ide:GetProjectStartFile() or options.startwith
         or (editor and SaveIfModified(editor) and ide:GetDocument(editor):GetFilePath())
 
       if not startfile then
@@ -1711,8 +1713,12 @@ function debugger:SetOptions(options) self.options = options end
 function debugger:Stop()
   local debugger = self
   -- terminate the local session (if still active)
-  if killProcess(ide:GetLaunchedProcess()) then ide:SetLaunchedProcess(nil) end
-  debugger:terminate()
+  if killProcess(ide:GetLaunchedProcess()) then
+    ide:SetLaunchedProcess(nil)
+    debugger:teardown()
+  else
+    debugger:terminate()
+  end
 end
 
 function debugger:Shutdown()

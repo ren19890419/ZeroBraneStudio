@@ -2,6 +2,7 @@
 keymap[ID.STARTDEBUG] = "F5"
 keymap[ID.RUN] = "Ctrl-F5"
 keymap[ID.STOPDEBUG] = "Shift-F5"
+keymap[ID.RESTARTDEBUG] = "Ctrl-Shift-F5"
 keymap[ID.STEP] = "F11"
 keymap[ID.STEPOVER] = "F10"
 keymap[ID.STEPOUT] = "Shift-F11"

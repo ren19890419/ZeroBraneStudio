@@ -11,15 +11,17 @@ local editor = ide:ActivateFile(debugfile)
 editor:BreakpointToggle(4)
 
 ide:GetMenuBar():Check(ID.CLEAROUTPUTENABLE, false)
-ProjectDebug()
+local firstpid = ProjectDebug()
 
 local commands = {
   {debugfile, 1, "Step"},
   {debugfile, 2, "RunTo", {editor, 4}},
   {debugfile, 4, "Run"},
-  {debugfile, 5, "Stop"},
+  {debugfile, 5, "Restart"},
+  {debugfile, 1, "Stop"},
 }
 local command = 1
+local restarting, othereditor
 
 -- wait for the connection to be initiated
 pkg.onDebuggerActivate = function(self, debugger, file, line)
@@ -38,9 +40,37 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
     debugger:Wait()
   end
   command = command + 1
-  debugger[cmd](debugger, unpack(args or {}))
+  if cmd == "Restart" then
+    local item = ID.RESTARTDEBUG and ide:FindMenuItem(ID.RESTARTDEBUG)
+    ok(item ~= nil, "Restart Debugging is available from the Project menu.")
+    if not item then
+      debugger:Stop()
+      return
+    end
+    local shortcut = wx.wxAcceleratorEntry()
+    shortcut:FromString("Ctrl-Shift-F5")
+    local accel = item:GetAccel()
+    ok(accel and accel:GetFlags() == shortcut:GetFlags() and accel:GetKeyCode() == shortcut:GetKeyCode(),
+      "Ctrl+Shift+F5 invokes Restart Debugging.")
+    restarting = true
+    ide:DoWhenIdle(function()
+      othereditor = ide:LoadFile("t/test.lua")
+      ide:GetMainFrame():ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, ID.RESTARTDEBUG))
+    end)
+  else
+    if restarting then
+      restarting = false
+      local pid = ide:GetLaunchedProcess()
+      ok(pid and pid ~= firstpid, "Restart starts a new process for the original entry file.")
+      ok(not wx.wxProcess.Exists(firstpid), "The old debug process exits before the new session starts.")
+    end
+    debugger[cmd](debugger, unpack(args or {}))
+  end
 end
 pkg.onDebuggerClose = function()
+  if restarting then return end
+  local otherdoc = ide:IsValidCtrl(othereditor) and ide:GetDocument(othereditor)
+  if otherdoc then otherdoc:Close() end
   local doc = ide:IsValidCtrl(editor) and ide:GetDocument(editor)
   if doc then doc:Close() end
 
