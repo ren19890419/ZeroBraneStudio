@@ -10,6 +10,7 @@ return {
   ["&Compile"] = "編譯", -- src\editor\menu_project.lua
   ["&Copy Value"] = "複製值", -- src\editor\debugger.lua
   ["&Copy"] = "複製", -- src\editor\gui.lua, src\editor\editor.lua, src\editor\menu_edit.lua
+  ["&Debug"] = "除錯", -- src\editor\menu_project.lua
   ["&Default Layout"] = "預設布局", -- src\editor\menu_view.lua
   ["&Delete Watch"] = "刪除監視", -- src\editor\debugger.lua
   ["&Delete"] = "刪除", -- src\editor\filetree.lua

@@ -76,6 +76,13 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
   is(line, aline, "Line number is reported as expected after debugger activation ("..command.."/"..#commands..").")
   if debugger:IsRunning() then debugger:Wait() end
   if command == 1 then
+    ok(isEnabled(ID.STARTDEBUG) and isEnabled(ID.STEP) and isEnabled(ID.RUNTO)
+      and isEnabled(ID.STOPDEBUG) and not isEnabled(ID.BREAK), "Debug actions reflect a paused session.")
+    local debugMenu = ide:FindTopMenu("&Debug")
+    if debugMenu then
+      is(debugMenu:FindItem(ID.STARTDEBUG):GetItemLabelText(), wx.wxMenuItem.GetLabelText(TR("Co&ntinue")),
+        "Debug menu shows Continue when the debugger is attached.")
+    end
     debugger:EvalAsync("a == nil", function(val)
         is(val, "true", "Step Into stops before executing the first statement.")
       end)
@@ -88,7 +95,7 @@ pkg.onDebuggerActivate = function(self, debugger, file, line)
   command = command + 1
   if cmd == "Restart" then
     local item = ID.RESTARTDEBUG and ide:FindMenuItem(ID.RESTARTDEBUG)
-    ok(item ~= nil, "Restart Debugging is available from the Project menu.")
+    ok(item ~= nil, "Restart Debugging is available from the menu bar.")
     if not item then
       debugger:Stop()
       return

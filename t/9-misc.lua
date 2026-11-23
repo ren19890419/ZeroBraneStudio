@@ -91,6 +91,15 @@ end
 ide:GetDocument(editor):SetModified(false)
 ClosePage()
 
+local debugMenu = ide:FindTopMenu("&Debug")
+local projectMenu = ide:FindTopMenu("&Project")
+ok(debugMenu and debugMenu:FindItem(ID.STARTDEBUG) ~= nil, "Debug menu provides Start Debugging.")
+ok(debugMenu and debugMenu:FindItem(ID.STEP) ~= nil and debugMenu:FindItem(ID.RUNTO) ~= nil
+  and debugMenu:FindItem(ID.BREAKPOINTTOGGLE) ~= nil, "Debug menu provides stepping, Run To Cursor, and breakpoints.")
+ok(projectMenu and projectMenu:FindItem(ID.RUN) ~= nil and projectMenu:FindItem(ID.COMPILE) ~= nil,
+  "Project menu provides Run and Compile.")
+ok(projectMenu and projectMenu:FindItem(ID.STARTDEBUG) == nil, "Start Debugging has a single menu entry.")
+
 local at = ide:GetAccelerators()
 ok(next(at) ~= nil, "One or more accelerator is set in the accelerator table.")
 for id in pairs(at) do ide:SetAccelerator(id, nil) end

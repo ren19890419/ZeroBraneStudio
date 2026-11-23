@@ -15,22 +15,27 @@ local targetDirMenu = ide:MakeMenu {
   {ID_PROJECTDIRFROMFILE, TR("Set From Current File")..KSC(ID_PROJECTDIRFROMFILE), TR("Set project directory from current file")},
 }
 local targetMenu = ide:MakeMenu {}
-local debugMenu = ide:MakeMenu {
+local projectMenu = ide:MakeMenu {
   { ID_RUN, TR("&Run")..KSC(ID_RUN), TR("Execute the current project/file") },
   { ID_RUNNOW, TR("Run As Scratchpad")..KSC(ID_RUNNOW), TR("Execute the current project/file and keep updating the code to see immediate results"), wx.wxITEM_CHECK },
   { ID_COMPILE, TR("&Compile")..KSC(ID_COMPILE), TR("Compile the current file") },
-  { ID_STARTDEBUG, TR("Start &Debugging")..KSC(ID_STARTDEBUG), TR("Start or continue debugging") },
-  { ID_ATTACHDEBUG, TR("&Start Debugger Server")..KSC(ID_ATTACHDEBUG), TR("Allow external process to start debugging"), wx.wxITEM_CHECK },
   { },
+  { ID_CLEAROUTPUTENABLE, TR("C&lear Output Window")..KSC(ID_CLEAROUTPUTENABLE), TR("Clear the output window before compiling or debugging"), wx.wxITEM_CHECK },
+  { ID_COMMANDLINEPARAMETERS, TR("Command Line Parameters...")..KSC(ID_COMMANDLINEPARAMETERS), TR("Provide command line parameters") },
+  { ID_PROJECTDIR, TR("Project Directory"), TR("Set the project directory to be used"), targetDirMenu },
+  { ID_INTERPRETER, TR("Lua &Interpreter"), TR("Set the interpreter to be used"), targetMenu },
+}
+local debugMenu = ide:MakeMenu {
+  { ID_STARTDEBUG, TR("Start &Debugging")..KSC(ID_STARTDEBUG), TR("Start or continue debugging") },
+  { ID_BREAK, TR("&Break")..KSC(ID_BREAK), TR("Break execution at the next executed line of code") },
   { ID_STOPDEBUG, TR("S&top Process")..KSC(ID_STOPDEBUG), TR("Stop the currently running process") },
   { ID_RESTARTDEBUG, TR("Restart Debugging")..KSC(ID_RESTARTDEBUG), TR("Restart the current debugging session") },
-  { ID_DETACHDEBUG, TR("Detach &Process")..KSC(ID_DETACHDEBUG), TR("Stop debugging and continue running the process") },
+  { },
   { ID_STEP, TR("Step &Into")..KSC(ID_STEP), TR("Step into") },
   { ID_STEPOVER, TR("Step &Over")..KSC(ID_STEPOVER), TR("Step over") },
   { ID_STEPOUT, TR("Step O&ut")..KSC(ID_STEPOUT), TR("Step out of the current function") },
   { ID_RUNTO, TR("Run To Cursor")..KSC(ID_RUNTO), TR("Run to cursor") },
   { ID_TRACE, TR("Tr&ace")..KSC(ID_TRACE), TR("Trace execution showing each executed line") },
-  { ID_BREAK, TR("&Break")..KSC(ID_BREAK), TR("Break execution at the next executed line of code") },
   { },
   { ID_BREAKPOINT, TR("Breakpoint")..KSC(ID_BREAKPOINT), "", {
     { ID_BREAKPOINTTOGGLE, TR("Toggle Breakpoint")..KSC(ID_BREAKPOINTTOGGLE) },
@@ -38,12 +43,11 @@ local debugMenu = ide:MakeMenu {
     { ID_BREAKPOINTPREV, TR("Go To Previous Breakpoint")..KSC(ID_BREAKPOINTPREV) },
   } },
   { },
-  { ID_CLEAROUTPUTENABLE, TR("C&lear Output Window")..KSC(ID_CLEAROUTPUTENABLE), TR("Clear the output window before compiling or debugging"), wx.wxITEM_CHECK },
-  { ID_COMMANDLINEPARAMETERS, TR("Command Line Parameters...")..KSC(ID_COMMANDLINEPARAMETERS), TR("Provide command line parameters") },
-  { ID_PROJECTDIR, TR("Project Directory"), TR("Set the project directory to be used"), targetDirMenu },
-  { ID_INTERPRETER, TR("Lua &Interpreter"), TR("Set the interpreter to be used"), targetMenu },
+  { ID_ATTACHDEBUG, TR("&Start Debugger Server")..KSC(ID_ATTACHDEBUG), TR("Allow external process to start debugging"), wx.wxITEM_CHECK },
+  { ID_DETACHDEBUG, TR("Detach &Process")..KSC(ID_DETACHDEBUG), TR("Stop debugging and continue running the process") },
 }
-menuBar:Append(debugMenu, TR("&Project"))
+menuBar:Append(projectMenu, TR("&Project"))
+menuBar:Append(debugMenu, TR("&Debug"))
 menuBar:Check(ID_CLEAROUTPUTENABLE, true)
 
 -- older (<3.x) versions of wxwidgets may not have `GetLabelText`, so provide alternative
