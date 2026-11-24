@@ -47,6 +47,24 @@ is(lsp.byteOffset(line, 3, "utf-32"), 8, "Reference locations can use UTF-32 col
 is(lsp.byteOffset(line, 7, "utf-8"), 4, "Navigation never splits a UTF-8 character.")
 is(lsp.byteOffset(line, 20, "utf-16"), #line, "A reference column beyond the line is clamped.")
 
+local function edit(line, first, last, replacement)
+  return {range = {start = {line = line, character = first},
+    ["end"] = {line = line, character = last}}, newText = replacement}
+end
+
+local edits = lsp.textEdits("header\r\n"..line.." x\r\n", {
+  edit(1, 6, 7, "second"), edit(1, 4, 5, "first"),
+}, "utf-16")
+is(edits and edits[1].start, 16, "Rename converts UTF-16 ranges to byte offsets after CRLF and emoji.")
+is(edits and edits[1].finish, 17, "Rename records the exclusive end of each replacement.")
+is(edits and edits[2].text, "second", "Rename orders edits by their position in the original text.")
+ok(not lsp.textEdits(line, {edit(0, 3, 5, "bad")}, "utf-16"), "Rename rejects a range inside a surrogate pair.")
+ok(not lsp.textEdits(line, {edit(0, 4, 7, "bad")}, "utf-16"), "Rename rejects out-of-bounds ranges.")
+ok(not lsp.textEdits("alpha", {edit(0, 0, 3, "a"), edit(0, 2, 5, "b")}, "utf-16"),
+  "Rename rejects overlapping replacements before applying any changes.")
+ok(not lsp.textEdits("alpha", {malformed = edit(0, 0, 3, "a")}, "utf-16"),
+  "Rename rejects malformed edit arrays instead of silently skipping entries.")
+
 if ide then
   local client = ide:GetPackage("core.luals")
   ok(client:IsEnabled() == (client:GetExecutable() ~= nil and client:GetSettings().enabled ~= false),

@@ -7,6 +7,7 @@ local windows = ide.osname == "Windows"
 local session, timer
 local stopping = {}
 local severity = {"error", "warning", "information", "hint"}
+local referencesMethod, renameMethod = "textDocument/references", "textDocument/rename"
 
 local function pathKey(path)
   path = path:gsub("\\", "/")
@@ -32,17 +33,27 @@ local function report(message)
   ide:Print(source..": "..message)
 end
 
-local function cancelReferences(s, reason)
-  local pending = s.references
+local function cancelRequest(s, reason)
+  local pending = s.pending
   if not pending then return end
-  s.references = nil
+  s.pending = nil
   notify(s, "$/cancelRequest", {id = pending.id})
   if reason then pending.done(nil, reason) end
 end
 
+local function documentChanged(s, editor)
+  local pending = s.pending
+  if not pending then return end
+  if pending.method == renameMethod then
+    cancelRequest(s, TR("A Lua document changed. Preview the rename again."))
+  elseif pending.editor == editor then
+    cancelRequest(s, TR("The Lua document changed. Find references again."))
+  end
+end
+
 local function reset(s)
   session = nil
-  s.references = nil
+  s.pending = nil
   problems:ClearDiagnostics(source)
   if not ide:IsExiting() then PackageEventHandle("onLuaLSStop") end
 end
@@ -56,7 +67,7 @@ end
 local function stop()
   local s = session
   if not s then return end
-  cancelReferences(s)
+  cancelRequest(s)
   reset(s)
   stopping[s.pid] = s
   s.deadline = ide:GetTime() + 1.5
@@ -72,9 +83,7 @@ local function closeDocument(s, editor)
   local doc = s.documents[editor]
   s.dirty[editor] = nil
   if not doc then return end
-  if s.references and s.references.editor == editor then
-    cancelReferences(s, TR("The Lua document changed. Find references again."))
-  end
+  documentChanged(s, editor)
   s.documents[editor], s.byPath[doc.key] = nil, nil
   notify(s, "textDocument/didClose", {textDocument = {uri = doc.uri}})
   problems:SetDiagnostics(source, doc.path, {})
@@ -119,10 +128,22 @@ local function syncDocument(s, editor)
   return current
 end
 
-local function validPosition(pos)
-  return type(pos) == "table"
-    and type(pos.line) == "number" and pos.line >= 0 and pos.line % 1 == 0
-    and type(pos.character) == "number" and pos.character >= 0 and pos.character % 1 == 0
+local function request(s, method, editor, pos, params, done)
+  cancelRequest(s, TR("The previous Lua request was canceled."))
+  for changed in pairs(s.dirty) do
+    if changed ~= editor then syncDocument(s, changed) end
+  end
+  local doc = syncDocument(s, editor)
+  if not doc then return false end
+  pos = math.max(0, math.min(pos, editor:GetLength()))
+  local line = editor:LineFromPosition(pos)
+  local prefix = editor:GetTextRangeDyn(editor:PositionFromLine(line), math.min(pos, editor:GetLineEndPosition(line)))
+  params.textDocument = {uri = doc.uri}
+  params.position = {line = line, character = lsp.endPosition(prefix, s.encoding).character}
+  s.requestId = s.requestId + 1
+  s.pending = {id = s.requestId, method = method, editor = editor, deadline = ide:GetTime() + 20, done = done}
+  send(s, {id = s.requestId, method = method, params = params})
+  return true
 end
 
 local function publish(s, params)
@@ -139,7 +160,7 @@ local function publish(s, params)
   local entries = {}
   for _, diagnostic in ipairs(params.diagnostics) do
     local start = type(diagnostic) == "table" and type(diagnostic.range) == "table" and diagnostic.range.start
-    if validPosition(start) and type(diagnostic.message) == "string" then
+    if lsp.validPosition(start) and type(diagnostic.message) == "string" then
       local code = diagnostic.code
       local message = diagnostic.message
       if type(code) == "string" or type(code) == "number" then message = message.." ["..code.."]" end
@@ -150,20 +171,12 @@ local function publish(s, params)
   problems:SetDiagnostics(source, path, entries)
 end
 
-local function receiveReferences(s, message)
-  local pending = s.references
-  s.references = nil
-  if message.error then
-    local err = type(message.error) == "table" and message.error.message
-    pending.done(nil, type(err) == "string" and err or TR("The language server could not find references."))
-    return
-  end
-
+local function referenceLocations(s, result)
   local results, seen = {}, {}
-  for _, location in ipairs(type(message.result) == "table" and message.result or {}) do
+  for _, location in ipairs(type(result) == "table" and result or {}) do
     local path = type(location) == "table" and lsp.filePath(location.uri, windows)
     local start = path and type(location.range) == "table" and location.range.start
-    if validPosition(start) then
+    if lsp.validPosition(start) then
       path = absolute(wx.wxFileName(path))
       local key = pathKey(path)
       local doc = s.documents[s.byPath[key]]
@@ -181,7 +194,36 @@ local function receiveReferences(s, message)
     if a.line ~= b.line then return a.line < b.line end
     return a.character < b.character
   end)
-  pending.done(results)
+  return results
+end
+
+local function renameFiles(s, result)
+  if result == lsp.null or result == nil then return {} end
+  if type(result) ~= "table" or result.documentChanges or type(result.changes) ~= "table"
+  or result.changes == lsp.null then
+    return nil, TR("LuaLS returned an unsupported rename edit.")
+  end
+  local files, seen = {}, {}
+  for uri, edits in pairs(result.changes) do
+    local path = lsp.filePath(uri, windows)
+    path = path and absolute(wx.wxFileName(path))
+    if not path or not inProject(s, path) then
+      return nil, TR("Rename includes a file outside the current project.")
+    end
+    local key = pathKey(path)
+    if seen[key] or type(edits) ~= "table" or edits == lsp.null then
+      return nil, TR("LuaLS returned an unsupported rename edit.")
+    end
+    seen[key] = true
+    local doc = s.documents[s.byPath[key]]
+    files[#files + 1] = {path = doc and doc.path or path, edits = edits, encoding = s.encoding}
+  end
+  table.sort(files, function(a, b) return pathKey(a.path) < pathKey(b.path) end)
+  return files
+end
+
+local function hasProvider(provider)
+  return provider == true or type(provider) == "table" and provider ~= lsp.null
 end
 
 local function receive(s, message)
@@ -207,13 +249,20 @@ local function receive(s, message)
     s.encoding = (encoding == "utf-8" or encoding == "utf-32") and encoding or "utf-16"
     s.change = type(sync) == "table" and (sync.change or 0) or tonumber(sync) or 0
     s.save = type(sync) == "table" and sync.save
-    s.canFindReferences = caps.referencesProvider == true
-      or type(caps.referencesProvider) == "table" and caps.referencesProvider ~= lsp.null
+    s.canFindReferences = hasProvider(caps.referencesProvider)
+    s.canRename = hasProvider(caps.renameProvider)
     s.ready = true
     notify(s, "initialized", lsp.object())
     for _, doc in pairs(ide:GetDocuments()) do syncDocument(s, doc:GetEditor()) end
-  elseif not method and s.references and message.id == s.references.id then
-    receiveReferences(s, message)
+  elseif not method and s.pending and message.id == s.pending.id then
+    local pending = s.pending
+    s.pending = nil
+    if message.error then
+      local err = type(message.error) == "table" and message.error.message
+      pending.done(nil, type(err) == "string" and err or TR("The Lua language server request failed."))
+    else
+      pending.done(message.result)
+    end
   elseif method == "textDocument/publishDiagnostics" then
     if s.ready then publish(s, params) end
   elseif method and message.id ~= nil then
@@ -307,8 +356,9 @@ timer = ide:AddTimer(frame, function()
       report(TR("Language server initialization timed out."))
       stop()
     elseif s.ready then
-      if s.references and now >= s.references.deadline then
-        cancelReferences(s, TR("Finding Lua references timed out."))
+      if s.pending and now >= s.pending.deadline then
+        cancelRequest(s, s.pending.method == renameMethod and TR("Previewing the Lua rename timed out.")
+          or TR("Finding Lua references timed out."))
       end
       for editor, due in pairs(s.dirty) do
         if now >= due then syncDocument(s, editor) end
@@ -334,22 +384,24 @@ local client = ide:AddPackage("core.luals", {
   FindReferences = function(self, editor, pos, done)
     if not self:CanFindReferences(editor) then return false end
     local s = session
-    cancelReferences(s)
-    for changed in pairs(s.dirty) do
-      if changed ~= editor then syncDocument(s, changed) end
-    end
-    local doc = syncDocument(s, editor)
-    if not doc then return false end
-    pos = math.max(0, math.min(pos, editor:GetLength()))
-    local line = editor:LineFromPosition(pos)
-    local prefix = editor:GetTextRangeDyn(editor:PositionFromLine(line), math.min(pos, editor:GetLineEndPosition(line)))
-    s.requestId = s.requestId + 1
-    s.references = {id = s.requestId, editor = editor, deadline = ide:GetTime() + 20, done = done}
-    send(s, {id = s.requestId, method = "textDocument/references", params = {
-      textDocument = {uri = doc.uri}, position = {line = line, character = lsp.endPosition(prefix, s.encoding).character},
-      context = {includeDeclaration = true},
-    }})
-    return true
+    return request(s, referencesMethod, editor, pos, {context = {includeDeclaration = true}}, function(result, err)
+      if err then done(nil, err) else done(referenceLocations(s, result)) end
+    end)
+  end,
+  CanRename = function(self, editor)
+    local s = session
+    return s and s.canRename and s.documents[editor] ~= nil or false
+  end,
+  RenameSymbol = function(self, editor, pos, newName, done)
+    if not self:CanRename(editor) then return false end
+    local s = session
+    return request(s, renameMethod, editor, pos, {newName = newName}, function(result, err)
+      if err then done(nil, err) else done(renameFiles(s, result)) end
+    end)
+  end,
+  CancelRename = function()
+    local s = session
+    if s and s.pending and s.pending.method == renameMethod then cancelRequest(s) end
   end,
   Restart = function(self)
     stop()
@@ -385,9 +437,7 @@ local client = ide:AddPackage("core.luals", {
     local s = session
     if s and s.documents[editor] then
       s.dirty[editor] = ide:GetTime() + 0.2
-      if s.references and s.references.editor == editor then
-        cancelReferences(s, TR("The Lua document changed. Find references again."))
-      end
+      documentChanged(s, editor)
     end
   end,
   onEditorSave = function(self, editor)

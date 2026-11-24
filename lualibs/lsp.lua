@@ -115,6 +115,12 @@ function lsp.endPosition(text, encoding)
   return {line = line, character = character}
 end
 
+function lsp.validPosition(pos)
+  return type(pos) == "table"
+    and type(pos.line) == "number" and pos.line >= 0 and pos.line % 1 == 0
+    and type(pos.character) == "number" and pos.character >= 0 and pos.character % 1 == 0
+end
+
 function lsp.byteOffset(line, character, encoding)
   local offset = 0
   for codepoint in line:gmatch("[^\128-\191][\128-\191]*") do
@@ -123,7 +129,45 @@ function lsp.byteOffset(line, character, encoding)
     if character < units then break end
     offset, character = offset + bytes, character - units
   end
-  return offset
+  return offset, character == 0
+end
+
+function lsp.textEdits(text, edits, encoding)
+  if type(edits) ~= "table" then return end
+  local lines, first = {}, 1
+  while true do
+    local eol = text:find("[\r\n]", first)
+    lines[#lines + 1] = {first, (eol or #text + 1) - 1}
+    if not eol then break end
+    first = eol + (text:sub(eol, eol + 1) == "\r\n" and 2 or 1)
+  end
+
+  local function offset(pos)
+    if not lsp.validPosition(pos) then return end
+    local line = lines[pos.line + 1]
+    if not line then return end
+    local bytes, exact = lsp.byteOffset(text:sub(line[1], line[2]), pos.character, encoding)
+    if exact then return line[1] - 1 + bytes, line end
+  end
+
+  local result = {}
+  for _, edit in ipairs(edits) do
+    if type(edit) ~= "table" or type(edit.range) ~= "table" or type(edit.newText) ~= "string" then return end
+    local start, startLine = offset(edit.range.start)
+    local finish, endLine = offset(edit.range["end"])
+    if not start or not finish or finish < start then return end
+    result[#result + 1] = {start = start, finish = finish, text = edit.newText,
+      line = edit.range.start.line, contextStart = startLine[1], contextEnd = endLine[2]}
+  end
+  for index in pairs(edits) do
+    if not result[index] then return end
+  end
+  table.sort(result, function(a, b) return a.start < b.start end)
+  for i = 2, #result do
+    local prev, edit = result[i - 1], result[i]
+    if edit.start < prev.finish or edit.start == prev.start then return end
+  end
+  return result
 end
 
 return lsp
