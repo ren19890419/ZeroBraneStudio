@@ -5,6 +5,7 @@ local jumps, jumpIndex = {}, 0
 local histories = {entries, jumps}
 local historyLimit = 100
 local menuLimit = 20
+local previewBytes = 96
 
 local function fileKey(path)
   if not path then return end
@@ -22,6 +23,29 @@ end
 local function newLocation(editor, pos)
   local entry = {path = ide:GetDocument(editor):GetFilePath()}
   keepPosition(entry, editor, pos)
+  return entry
+end
+
+local function previewCode(entry)
+  local editor = entry.editor
+  local first = editor:PositionFromLine(entry.line)
+  local last = editor:GetLineEndPosition(entry.line)
+  local start = first
+  -- Keep the jump in view on long lines while bounding the text read for a menu row.
+  if last - first > previewBytes and entry.position - first >= previewBytes then
+    start = math.min(entry.position - previewBytes / 2, last - previewBytes)
+    start = editor:PositionBefore(editor:PositionAfter(start))
+  end
+  local finish = math.min(last, start + previewBytes)
+  if finish < last then finish = editor:PositionBefore(editor:PositionAfter(finish)) end
+  local text = editor:GetTextRangeDyn(start, finish):gsub("%c", " "):match("^%s*(.-)%s*$")
+  if text == "" then return end
+  return (start > first and "…" or "")..FixUTF8(text, "\239\191\189")..(finish < last and "…" or "")
+end
+
+local function newJump(editor, pos)
+  local entry = newLocation(editor, pos)
+  entry.preview = previewCode(entry)
   return entry
 end
 
@@ -122,7 +146,10 @@ local function createJumpHistoryMenu(direction)
       else
         names[key] = {identity = identity}
       end
-      locations[#locations + 1] = {index = index, entry = entry, path = path, name = name, key = key}
+      local preview = entry.preview
+      if doc then preview = previewCode(entry) end
+      locations[#locations + 1] = {index = index, entry = entry, path = path, name = name, key = key,
+        preview = preview}
     end
     index = jumpCandidate(direction, index)
   end
@@ -138,8 +165,9 @@ local function createJumpHistoryMenu(direction)
       name = file:GetFullPath()
     end
     local id = ID("navigation.jump.history."..row)
-    local label = ("%s:%d"):format(name:gsub("[\t\r\n]", " "):gsub("&", "&&"), location.entry.line + 1)
-    menu:Append(id, label, location.path or "")
+    local label = ("%s:%d"):format(name:gsub("[\t\r\n]", " "), location.entry.line + 1)
+    if location.preview then label = label.."    "..location.preview end
+    menu:Append(id, (label:gsub("&", "&&")), location.path or "")
     menu:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function()
       if not jumpTo(location.index, location.entry) then
         ide:SetStatusFor(TR("This jump location is no longer available."))
@@ -156,9 +184,9 @@ local navigation = ide:AddPackage("core.navigation", {
     for index = #jumps, jumpIndex + 1, -1 do jumps[index] = nil end
     local current = jumps[jumpIndex]
     if not current or current.editor ~= editor or current.position ~= position then
-      jumps[#jumps + 1] = newLocation(editor, position)
+      jumps[#jumps + 1] = newJump(editor, position)
     end
-    jumps[#jumps + 1] = newLocation(target, targetPosition)
+    jumps[#jumps + 1] = newJump(target, targetPosition)
     while #jumps > historyLimit do table.remove(jumps, 1) end
     jumpIndex = #jumps
   end,
@@ -222,6 +250,7 @@ local navigation = ide:AddPackage("core.navigation", {
       for index = #history, 1, -1 do
         local entry = history[index]
         if entry.editor == editor then
+          if history == jumps and path then entry.preview = previewCode(entry) end
           entry.editor, entry.path = nil, path
           if history == entries and not path then removeEdit(index) end
         end
