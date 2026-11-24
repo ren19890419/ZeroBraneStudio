@@ -4,16 +4,21 @@ local frame = ide:GetMainFrame()
 local notebook = ide:GetOutputNotebook()
 local windows = ide.osname == "Windows"
 local viewId, refreshId, diffId = ID("view.gitchanges"), ID("git.refresh"), ID("git.diff")
+local stageId, unstageId, commitId = ID("git.stage"), ID("git.unstage"), ID("git.commit")
 local title, diffTitle = TR("Git Changes"), TR("Git Diff")
 
 local panel = wx.wxPanel(notebook, wx.wxID_ANY)
 local refreshButton = wx.wxButton(panel, refreshId, TR("Refresh"))
+local stageButton = wx.wxButton(panel, stageId, TR("Stage Selected"))
+local unstageButton = wx.wxButton(panel, unstageId, TR("Unstage Selected"))
+local commitButton = wx.wxButton(panel, commitId, TR("Commit Staged..."))
 local summary = wx.wxStaticText(panel, wx.wxID_ANY, "")
 local header = wx.wxBoxSizer(wx.wxHORIZONTAL)
-header:Add(refreshButton, 0, wx.wxRIGHT, 8)
-header:Add(summary, 1, wx.wxALIGN_CENTER_VERTICAL)
+for _, button in ipairs({refreshButton, stageButton, unstageButton, commitButton}) do
+  header:Add(button, 0, wx.wxRIGHT, 6)
+end
 local list = wx.wxListCtrl(panel, wx.wxID_ANY, wx.wxDefaultPosition, wx.wxDefaultSize,
-  wx.wxLC_REPORT + wx.wxLC_SINGLE_SEL)
+  wx.wxLC_REPORT)
 list:SetName(title)
 for index, column in ipairs({{TR("File"), 360}, {TR("Change"), 125}, {TR("Area"), 120}}) do
   list:InsertColumn(index - 1, column[1])
@@ -21,6 +26,7 @@ for index, column in ipairs({{TR("File"), 360}, {TR("Change"), 125}, {TR("Area")
 end
 local sizer = wx.wxBoxSizer(wx.wxVERTICAL)
 sizer:Add(header, 0, wx.wxEXPAND + wx.wxALL, 5)
+sizer:Add(summary, 0, wx.wxEXPAND + wx.wxLEFT + wx.wxRIGHT + wx.wxBOTTOM, 5)
 sizer:Add(list, 1, wx.wxEXPAND)
 panel:SetSizer(sizer)
 ide:AddPanelDocked(notebook, panel, "gitchangespanel", title, nil, false)
@@ -47,7 +53,7 @@ local area = {staged = TR("Staged"), unstaged = TR("Unstaged"), untracked = TR("
 local change = {M = TR("Modified"), A = TR("Added"), D = TR("Deleted"), R = TR("Renamed"),
   C = TR("Copied"), T = TR("Type Changed"), U = TR("Conflict"), ["?"] = TR("Untracked")}
 local state, timer, diffRequest
-local jobs = {}
+local jobs, mutations = {}, {}
 local visible = {}
 local gitExe
 local maxStatus, maxPatch = 16 * 1024 * 1024, 4 * 1024 * 1024
@@ -55,6 +61,19 @@ local maxStatus, maxPatch = 16 * 1024 * 1024, 4 * 1024 * 1024
 local function pathKey(value)
   if windows then value = value:gsub("\\", "/"):lower() end
   return (value:gsub("/+$", ""))
+end
+
+local function activeMutation(s)
+  return s and s.root and mutations[pathKey(s.root)]
+end
+
+local function canMutate(s)
+  return s ~= nil and s.snapshot ~= nil and not s.busy and not s.needsRefresh
+    and not s.editingCommit and not activeMutation(s)
+end
+
+local function canCommit(s)
+  return canMutate(s) and s.snapshot.stagedCount > 0 and not s.snapshot.hasConflicts
 end
 
 local function display(value)
@@ -119,11 +138,23 @@ local function markTree(previous)
   visit(root)
 end
 
-local function render()
-  local selected = list:GetNextItem(-1, wx.wxLIST_NEXT_ALL, wx.wxLIST_STATE_SELECTED)
-  local previous = visible[selected + 1]
+local function selectedRows()
+  local result = {}
+  local index = list:GetNextItem(-1, wx.wxLIST_NEXT_ALL, wx.wxLIST_STATE_SELECTED)
+  while index >= 0 do
+    if visible[index + 1] then result[#result + 1] = visible[index + 1] end
+    index = list:GetNextItem(index, wx.wxLIST_NEXT_ALL, wx.wxLIST_STATE_SELECTED)
+  end
+  return result
+end
+
+local function selectionKey(row) return row.area.."\0"..row.path end
+
+local function render(restoreSelection)
+  local previous = restoreSelection or selectedRows()
   local snapshot = state and state.snapshot
   visible = snapshot and snapshot.rows or {}
+  local exact, paths = {}, {}
   list:Freeze()
   list:DeleteAllItems()
   for index, row in ipairs(visible) do
@@ -131,16 +162,21 @@ local function render()
     list:InsertItem(index - 1, display(file))
     list:SetItem(index - 1, 1, change[row.code] or row.code)
     list:SetItem(index - 1, 2, area[row.area])
-    if previous and previous.path == row.path and previous.area == row.area then
-      list:SetItemState(index - 1, wx.wxLIST_STATE_SELECTED, wx.wxLIST_STATE_SELECTED)
-    end
+    exact[selectionKey(row)], paths[row.path] = index - 1, index - 1
+  end
+  for _, row in ipairs(previous) do
+    local index = exact[selectionKey(row)] or paths[row.path]
+    if index then list:SetItemState(index, wx.wxLIST_STATE_SELECTED, wx.wxLIST_STATE_SELECTED) end
   end
   list:Thaw()
-  summary:SetLabel(not state and TR("Open a Git project to see its changes.")
+  local mutation = activeMutation(state)
+  local status = not state and TR("Open a Git project to see its changes.")
     or state and state.error
     or snapshot and (TR("Git branch %s"):format(branchName(snapshot)).."  "
       ..(#visible == 0 and TR("No changes") or TR("%d changes"):format(#visible)))
-    or TR("Reading Git status..."))
+    or TR("Reading Git status...")
+  local feedback = mutation or state and state.feedback
+  summary:SetLabel(feedback and status.."  "..feedback or status)
   panel:Layout()
 end
 
@@ -183,7 +219,7 @@ local function ensureTimer()
   if not timer:IsRunning() then timer:Start(75) end
 end
 
-local function runGit(cwd, args, limit, callback)
+local function runGit(cwd, args, limit, callback, writesRepository)
   local exe = executable()
   if not exe then
     callback(nil, "", TR("Git was not found. Install Git or set path.git in user.lua."))
@@ -202,23 +238,31 @@ local function runGit(cwd, args, limit, callback)
     end
   end, function(pid, code)
     jobs[pid] = nil
-    callback(code, table.concat(chunks), errors, shortened)
+    callback(code, table.concat(chunks), errors, shortened, pid)
   end, {raw = true, group = true, stderr = function(data) errors = (errors..data):sub(1, 4096) end})
-  if pid then jobs[pid] = true; ensureTimer()
-  else callback(nil, "", TR("Cannot start Git: %s"):format(err or "")) end
+  if not pid then
+    callback(nil, "", TR("Cannot start Git: %s"):format(err or ""))
+    return
+  end
+  jobs[pid] = writesRepository and "write" or "read"
+  ensureTimer()
 end
 
 local function accept(s, snapshot, message)
   if s ~= state then return end
   local previous = s.snapshot and s.snapshot.byPath
   s.busy, s.snapshot, s.error = false, snapshot, message
+  s.needsRefresh = nil
   if snapshot then
     snapshot.root, snapshot.byPath = s.root, {}
+    snapshot.stagedCount, snapshot.hasConflicts = 0, false
     table.sort(snapshot.rows, function(a, b)
       if a.path ~= b.path then return a.path < b.path end
       return a.area < b.area
     end)
     for _, row in ipairs(snapshot.rows) do
+      if row.area == "staged" then snapshot.stagedCount = snapshot.stagedCount + 1 end
+      if row.area == "conflict" then snapshot.hasConflicts = true end
       local key = pathKey(s.root.."/"..row.path)
       -- Prefer the worktree diff when a file is also staged.
       local old = snapshot.byPath[key]
@@ -273,16 +317,115 @@ local function reset(project)
   state = project and {project = project} or nil
   diffRequest = nil
   markTree(previous)
-  render()
+  render({})
   setPatch(diffTitle, TR("Double-click a Git change to see its diff."))
 end
 
 timer = ide:AddTimer(frame, function()
   ide:GetOutput():ProcessStreams()
   local s = state
-  if s and s.due and not s.busy and s.due <= ide:GetTime() then refresh(s) end
+  if s and s.due and not s.busy and not s.editingCommit and not activeMutation(s)
+  and s.due <= ide:GetTime() then refresh(s) end
   if not next(jobs) and not (s and (s.due or s.busy)) then timer:Stop() end
 end)
+
+local function writeInput(s, contents)
+  local temporary = wx.wxFile()
+  local path = wx.wxFileName.CreateTempFileName("zbs-git", temporary)
+  if path and path ~= "" then
+    temporary:Close()
+    -- Git must never receive an empty path list as an index operation.
+    if FileWrite(path, contents) and FileRead(path) == contents then return path end
+    FileRemove(path)
+  end
+  s.feedback = TR("Could not prepare Git operation input.")
+  ide:GetOutput():Error(s.feedback)
+  render()
+end
+
+local function mutate(s, args, inputPath, progress, success, onSuccess)
+  if not canMutate(s) or s ~= state then
+    if inputPath then FileRemove(inputPath) end
+    return false
+  end
+  local root, key = s.root, pathKey(s.root)
+  mutations[key], s.feedback = progress, nil
+  render()
+  runGit(root, args, maxPatch, function(code, output, errors, _, pid)
+    if inputPath and (code ~= nil or not pid or not wx.wxProcess.Exists(pid)) then FileRemove(inputPath) end
+    mutations[key] = nil
+    if ide:IsExiting() then return end
+    local details = (output..errors):gsub("%s+$", "")
+    local heading = "["..display(root).."] "
+    if code == 0 then
+      if onSuccess then onSuccess() end
+      if details ~= "" then ide:Print(heading..FixUTF8(details, "\239\191\189")) end
+      s.feedback = success
+    else
+      s.feedback = TR("Git operation failed. See Output for details.")
+      ide:GetOutput():Error(heading..(details ~= "" and FixUTF8(details, "\239\191\189") or s.feedback))
+    end
+    if state and state.root and pathKey(state.root) == key then
+      if code == 0 and diffRequest then
+        diffRequest = nil
+        setPatch(diffTitle, TR("Double-click a Git change to see its diff."))
+      end
+      state.needsRefresh = true
+      queue()
+      render()
+    end
+  end, true)
+  return true
+end
+
+local function updateIndex(stage)
+  local s = state
+  if not canMutate(s) then return false end
+  local paths = gitstatus.pathsToUpdate(selectedRows(), stage)
+  if #paths == 0 then return false end
+  local args = stage and {"add"} or {"reset", "-q"}
+  local inputPath
+  local bytes = 0
+  local needsFile = false
+  for _, path in ipairs(paths) do
+    bytes = bytes + #quote(path) + 1
+    if not FixUTF8(path) then needsFile = true end
+  end
+  if bytes < 24000 and not needsFile then
+    args[#args + 1] = "--"
+    for _, path in ipairs(paths) do args[#args + 1] = path end
+  else
+    inputPath = writeInput(s, table.concat(paths, "\0").."\0")
+    if not inputPath then return false end
+    args[#args + 1], args[#args + 2] = "--pathspec-from-file="..inputPath, "--pathspec-file-nul"
+  end
+  return mutate(s, args, inputPath, stage and TR("Staging changes...") or TR("Unstaging changes..."),
+    stage and TR("Selected changes staged.") or TR("Selected changes unstaged."))
+end
+
+local function commitStaged()
+  local s = state
+  if not canCommit(s) then return end
+  local prompt = TR("Commit all staged changes on %s."):format(branchName(s.snapshot))
+  local dialog = wx.wxTextEntryDialog(frame, prompt, TR("Commit Staged Changes"), s.draft or "",
+    wx.wxOK + wx.wxCANCEL + wx.wxTE_MULTILINE)
+  s.editingCommit = true
+  local accepted = dialog:ShowModal() == wx.wxID_OK
+  s.editingCommit = nil
+  local message = dialog:GetValue()
+  dialog:Destroy()
+  if not accepted or s ~= state or not canCommit(s) then return end
+  if not message:match("%S") then
+    s.feedback = TR("Enter a commit message.")
+    render()
+    return
+  end
+  s.draft = message
+  local inputPath = writeInput(s, message)
+  if not inputPath then return end
+  mutate(s, {"commit", "--file="..inputPath}, inputPath, TR("Committing staged changes..."), TR("Commit created."),
+    function() s.draft = nil end)
+end
 
 local function showDiff(row)
   local s = state
@@ -344,8 +487,8 @@ local gitview = ide:AddPackage("core.gitview", {
   onAppClose = function()
     state, diffRequest = nil, nil
     timer:Stop()
-    for pid in pairs(jobs) do
-      if wx.wxProcess.Exists(pid) then wx.wxProcess.Kill(pid, wx.wxSIGKILL, wx.wxKILL_CHILDREN) end
+    for pid, mode in pairs(jobs) do
+      if mode == "read" and wx.wxProcess.Exists(pid) then wx.wxProcess.Kill(pid, wx.wxSIGKILL, wx.wxKILL_CHILDREN) end
     end
   end,
 })
@@ -358,5 +501,15 @@ end)
 ide:FindTopMenu("&View"):Append(viewId, title)
 frame:Connect(viewId, wx.wxEVT_COMMAND_MENU_SELECTED, function() gitview:Show() end)
 panel:Connect(refreshId, wx.wxEVT_COMMAND_BUTTON_CLICKED, function() gitview:Refresh() end)
+panel:Connect(stageId, wx.wxEVT_COMMAND_BUTTON_CLICKED, function() updateIndex(true) end)
+panel:Connect(unstageId, wx.wxEVT_COMMAND_BUTTON_CLICKED, function() updateIndex(false) end)
+panel:Connect(commitId, wx.wxEVT_COMMAND_BUTTON_CLICKED, commitStaged)
+panel:Connect(stageId, wx.wxEVT_UPDATE_UI, function(event)
+  event:Enable(canMutate(state) and #gitstatus.pathsToUpdate(selectedRows(), true) > 0)
+end)
+panel:Connect(unstageId, wx.wxEVT_UPDATE_UI, function(event)
+  event:Enable(canMutate(state) and #gitstatus.pathsToUpdate(selectedRows(), false) > 0)
+end)
+panel:Connect(commitId, wx.wxEVT_UPDATE_UI, function(event) event:Enable(canCommit(state)) end)
 render()
 setPatch(diffTitle, TR("Double-click a Git change to see its diff."))

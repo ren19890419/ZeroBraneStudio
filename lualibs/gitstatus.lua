@@ -43,4 +43,22 @@ function gitstatus.parse(data)
   if snapshot.branch then return snapshot end
 end
 
+function gitstatus.pathsToUpdate(rows, stage)
+  local paths, seen = {}, {}
+  local function add(path)
+    if path and not seen[path] then
+      paths[#paths + 1] = path
+      seen[path] = true
+    end
+  end
+  for _, row in ipairs(rows) do
+    if stage ~= (row.area == "staged") then
+      add(row.path)
+      -- Undo or stage a move as a pair. A copy leaves its source alone.
+      if row.code == "R" then add(row.oldPath) end
+    end
+  end
+  return paths
+end
+
 return gitstatus

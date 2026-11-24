@@ -20,3 +20,20 @@ is(model.rows[5].path, " leading\tname\n.lua", "NUL-delimited status preserves u
 local detached = assert(status.parse("# branch.head (detached)\0# branch.oid 91fade7300\0"))
 is(detached.oid, "91fade7300", "Detached HEAD retains its commit identity.")
 ok(status.parse("# branch.head main\0? partial") == nil, "Incomplete Git snapshots are rejected.")
+
+local mixed = {
+  {area = "staged", code = "R", path = "new [name].lua", oldPath = "old name.lua"},
+  {area = "unstaged", code = "M", path = "new [name].lua", oldPath = "old name.lua"},
+  {area = "untracked", code = "?", path = " leading\tname\n.lua"},
+  {area = "staged", code = "C", path = "copy.lua", oldPath = "source.lua"},
+  {area = "conflict", code = "U", path = "conflict.lua"},
+  {area = "unstaged", code = "D", path = "deleted.lua"},
+  {area = "unstaged", code = "M", path = "new [name].lua"},
+}
+is(table.concat(status.pathsToUpdate(mixed, true), "\0"),
+  "new [name].lua\0 leading\tname\n.lua\0conflict.lua\0deleted.lua",
+  "Staging uses unique working paths, including deletions and conflict resolutions.")
+is(table.concat(status.pathsToUpdate(mixed, false), "\0"), "new [name].lua\0old name.lua\0copy.lua",
+  "Unstaging a rename includes both paths, while a copy leaves the source alone.")
+is(#status.pathsToUpdate({mixed[1]}, true), 0, "A staged row alone is not a staging target.")
+is(#status.pathsToUpdate({mixed[3]}, false), 0, "An untracked row alone is not an unstaging target.")
