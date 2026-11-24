@@ -524,8 +524,9 @@ local client = ide:AddPackage("core.luals", {
     local line = math.min(location.line, editor:GetLineCount() - 1)
     local start = editor:PositionFromLine(line)
     local text = editor:GetTextRangeDyn(start, editor:GetLineEndPosition(line))
-    editor:GotoPosDelayed(start + lsp.byteOffset(text, location.character, location.encoding))
-    return true
+    local position = start + lsp.byteOffset(text, location.character, location.encoding)
+    editor:GotoPosDelayed(position)
+    return true, editor, position
   end,
   CanRename = function(self, editor)
     local s = session

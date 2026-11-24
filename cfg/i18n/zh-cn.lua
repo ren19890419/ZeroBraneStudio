@@ -212,6 +212,8 @@ return {
   ["Full &Screen"] = "全屏", -- src\editor\menu_view.lua
   ["Go To Definition"] = "前往定义", -- src\editor\editor.lua
   ["&Navigate"] = "导航",
+  ["Navigate Back"] = "跳转后退",
+  ["Navigate Forward"] = "跳转前进",
   ["Previous Edit Position"] = "上一次编辑位置",
   ["Next Edit Position"] = "下一次编辑位置",
   ["No definition found."] = "未找到定义。",

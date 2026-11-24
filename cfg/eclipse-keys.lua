@@ -57,7 +57,7 @@ local map = {
   [ID.VIEWFULLSCREEN]   = "Ctrl-Shift-A",
   [ID.ZOOMRESET]        = "Ctrl-0",
   [ID.ZOOMIN]           = "Ctrl-+",
-  [ID.ZOOMOUT]          = "Ctrl--",
+  [ID.ZOOMOUT]          = "Ctrl-Alt--",
 -- Project menu
   [ID.RUN]              = "Ctrl-F11",
   [ID.RUNNOW]           = "Ctrl-F6",

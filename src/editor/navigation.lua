@@ -1,6 +1,9 @@
 local ide = ide
 local frame = ide:GetMainFrame()
 local entries, selected = {}, nil
+local jumps, jumpIndex = {}, 0
+local histories = {entries, jumps}
+local historyLimit = 100
 
 local function fileKey(path)
   if not path then return end
@@ -15,17 +18,23 @@ local function keepPosition(entry, editor, pos)
   entry.column = editor:GetColumn(entry.position)
 end
 
+local function newLocation(editor, pos)
+  local entry = {path = ide:GetDocument(editor):GetFilePath()}
+  keepPosition(entry, editor, pos)
+  return entry
+end
+
 local function attach(entry, editor)
   local line = math.min(entry.line, editor:GetLineCount() - 1)
   keepPosition(entry, editor, editor:FindColumn(line, entry.column))
 end
 
-local function remove(index)
+local function removeEdit(index)
   if entries[index] == selected then selected = nil end
   table.remove(entries, index)
 end
 
-local function candidate(direction)
+local function editCandidate(direction)
   local index = #entries
   if selected then
     while index > 0 and entries[index] ~= selected do index = index - 1 end
@@ -41,28 +50,68 @@ local function candidate(direction)
   end
 end
 
-local function navigate(direction)
-  local index = candidate(direction)
+local function visit(entry)
+  local editor = entry.editor
+  local doc = editor and ide:IsValidCtrl(editor) and ide:GetDocument(editor)
+  if doc then
+    doc:SetActive()
+  else
+    editor = entry.path and ide:LoadFile(entry.path, nil, true)
+    if not editor then return false end
+    if entry.editor ~= editor then attach(entry, editor) end
+  end
+  editor:GotoPosDelayed(entry.position)
+  return true
+end
+
+local function navigateEdit(direction)
+  local index = editCandidate(direction)
   while index do
     local entry = entries[index]
-    local editor = entry.editor
-    if editor and ide:IsValidCtrl(editor) and ide:GetDocument(editor) then
-      ide:GetDocument(editor):SetActive()
-    else
-      editor = entry.path and ide:LoadFile(entry.path, nil, true)
-      if editor and entry.editor ~= editor then attach(entry, editor) end
-    end
-    if editor then
+    if visit(entry) then
       selected = entry
-      editor:GotoPosDelayed(entry.position)
       return
     end
-    remove(index)
-    index = candidate(direction)
+    removeEdit(index)
+    index = editCandidate(direction)
+  end
+end
+
+local function jumpCandidate(direction)
+  local index = jumpIndex + direction
+  while jumps[index] do
+    local entry = jumps[index]
+    if entry.editor or entry.path then return index end
+    index = index + direction
+  end
+end
+
+local function navigateJump(direction)
+  local index = jumpCandidate(direction)
+  while index do
+    local entry = jumps[index]
+    if visit(entry) then
+      jumpIndex = index
+      return
+    end
+    -- The file has disappeared. Leave the other jump indices in place.
+    entry.editor, entry.path = nil, nil
+    index = jumpCandidate(direction)
   end
 end
 
 ide:AddPackage("core.navigation", {
+  RecordJump = function(self, editor, position, target, targetPosition)
+    if editor == target and position == targetPosition then return end
+    for index = #jumps, jumpIndex + 1, -1 do jumps[index] = nil end
+    local current = jumps[jumpIndex]
+    if not current or current.editor ~= editor or current.position ~= position then
+      jumps[#jumps + 1] = newLocation(editor, position)
+    end
+    jumps[#jumps + 1] = newLocation(target, targetPosition)
+    while #jumps > historyLimit do table.remove(jumps, 1) end
+    jumpIndex = #jumps
+  end,
   onEditorChange = function(self, editor, pos, length, inserted, modification)
     if not pos or length == 0 or editor.loadingFile then return end
     local document = ide:GetDocument(editor)
@@ -70,10 +119,12 @@ ide:AddPackage("core.navigation", {
     local latest = entries[#entries]
     local previous = latest and latest.editor == editor and latest.position
 
-    for _, entry in ipairs(entries) do
-      if entry.editor == editor and entry.position >= pos then
-        local adjusted = inserted and entry.position + length or math.max(pos, entry.position - length)
-        keepPosition(entry, editor, adjusted)
+    for _, history in ipairs(histories) do
+      for _, entry in ipairs(history) do
+        if entry.editor == editor and entry.position >= pos then
+          local adjusted = inserted and entry.position + length or math.max(pos, entry.position - length)
+          keepPosition(entry, editor, adjusted)
+        end
       end
     end
     if editor.applyingTextEdits or bit.band(modification, wxstc.wxSTC_PERFORMED_UNDO + wxstc.wxSTC_PERFORMED_REDO) ~= 0 then return end
@@ -87,37 +138,43 @@ ide:AddPackage("core.navigation", {
       latest.time = time
     else
       selected = nil
-      local entry = {path = document:GetFilePath(), time = time}
-      keepPosition(entry, editor, at)
+      local entry = newLocation(editor, at)
+      entry.time = time
       entries[#entries + 1] = entry
-      if #entries > 100 then remove(1) end
+      if #entries > historyLimit then removeEdit(1) end
     end
   end,
   onEditorLoad = function(self, editor)
     local key = fileKey(ide:GetDocument(editor):GetFilePath())
-    for index = #entries, 1, -1 do
-      local entry = entries[index]
-      if key and fileKey(entry.path) == key then
-        attach(entry, editor)
-      elseif entry.editor == editor then
-        entry.editor = nil
-        if not entry.path then remove(index) end
+    for _, history in ipairs(histories) do
+      for index = #history, 1, -1 do
+        local entry = history[index]
+        if key and fileKey(entry.path) == key then
+          attach(entry, editor)
+        elseif entry.editor == editor then
+          entry.editor = nil
+          if history == entries and not entry.path then removeEdit(index) end
+        end
       end
     end
   end,
   onEditorSave = function(self, editor)
     local path = ide:GetDocument(editor):GetFilePath()
-    for _, entry in ipairs(entries) do
-      if entry.editor == editor then entry.path = path end
+    for _, history in ipairs(histories) do
+      for _, entry in ipairs(history) do
+        if entry.editor == editor then entry.path = path end
+      end
     end
   end,
   onEditorClose = function(self, editor)
     local path = ide:GetDocument(editor):GetFilePath()
-    for index = #entries, 1, -1 do
-      local entry = entries[index]
-      if entry.editor == editor then
-        entry.editor, entry.path = nil, path
-        if not path then remove(index) end
+    for _, history in ipairs(histories) do
+      for index = #history, 1, -1 do
+        local entry = history[index]
+        if entry.editor == editor then
+          entry.editor, entry.path = nil, path
+          if history == entries and not path then removeEdit(index) end
+        end
       end
     end
   end,
@@ -125,6 +182,9 @@ ide:AddPackage("core.navigation", {
 
 local menu = ide:MakeMenu {
   {ID.GOTODEFINITION, TR("Go To Definition")..KSC(ID.GOTODEFINITION)},
+  {},
+  {ID.JUMPBACK, TR("Navigate Back")..KSC(ID.JUMPBACK)},
+  {ID.JUMPFORWARD, TR("Navigate Forward")..KSC(ID.JUMPFORWARD)},
   {},
   {ID.PREVIOUSEDIT, TR("Previous Edit Position")..KSC(ID.PREVIOUSEDIT)},
   {ID.NEXTEDIT, TR("Next Edit Position")..KSC(ID.NEXTEDIT)},
@@ -145,6 +205,12 @@ end)
 
 for _, id in ipairs({ID.PREVIOUSEDIT, ID.NEXTEDIT}) do
   local direction = id == ID.PREVIOUSEDIT and -1 or 1
-  frame:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function() navigate(direction) end)
-  frame:Connect(id, wx.wxEVT_UPDATE_UI, function(event) event:Enable(candidate(direction) ~= nil) end)
+  frame:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function() navigateEdit(direction) end)
+  frame:Connect(id, wx.wxEVT_UPDATE_UI, function(event) event:Enable(editCandidate(direction) ~= nil) end)
+end
+
+for _, id in ipairs({ID.JUMPBACK, ID.JUMPFORWARD}) do
+  local direction = id == ID.JUMPBACK and -1 or 1
+  frame:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function() navigateJump(direction) end)
+  frame:Connect(id, wx.wxEVT_UPDATE_UI, function(event) event:Enable(jumpCandidate(direction) ~= nil) end)
 end

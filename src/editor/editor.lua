@@ -1608,10 +1608,13 @@ function CreateEditor(bare)
       local caret = editor:GetCurrentPos()
       local position = pos or caret
       if position == wxstc.wxSTC_INVALID_POSITION then return end
+      local navigation = ide:GetPackage("core.navigation")
       local function fallback()
         local _, value, instances = getPositionValues(position)
         if instances and instances[0] then
-          navigateToPosition(editor, caret, instances[0]-1, #value)
+          local definition = instances[0]-1
+          navigateToPosition(editor, caret, definition, #value)
+          if navigation then navigation:RecordJump(editor, caret, editor, definition) end
         else ide:SetStatusFor(TR("No definition found.")) end
       end
       local client = ide:GetPackage("core.luals")
@@ -1619,7 +1622,11 @@ function CreateEditor(bare)
         if ide:GetEditor() ~= editor or editor:GetCurrentPos() ~= caret then return end
         if err then ide:SetStatusFor(err, 5); return end
         for _, target in ipairs(targets) do
-          if client:OpenLocation(target) then return end
+          local opened, targetEditor, targetPosition = client:OpenLocation(target)
+          if opened then
+            if navigation then navigation:RecordJump(editor, caret, targetEditor, targetPosition) end
+            return
+          end
         end
         fallback()
       end) then return end

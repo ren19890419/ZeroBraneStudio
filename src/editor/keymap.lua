@@ -83,7 +83,7 @@ ide.config.keymap = {
   [ID.VIEWFULLSCREEN]   = "Ctrl-Shift-A",
   [ID.ZOOMRESET]        = "Ctrl-0",
   [ID.ZOOMIN]           = "Ctrl-+",
-  [ID.ZOOMOUT]          = "Ctrl--",
+  [ID.ZOOMOUT]          = "Ctrl-Alt--",
 -- Project menu
   [ID.RUN]              = "F6",
   [ID.RUNNOW]           = "Ctrl-F6",
@@ -114,6 +114,8 @@ ide.config.keymap = {
   [ID.DELETEWATCH]      = "Del",
 -- Editor popup menu items
   [ID.GOTODEFINITION]   = "F12",
+  [ID.JUMPBACK]         = "Ctrl--",
+  [ID.JUMPFORWARD]      = "Ctrl-Shift--",
   [ID.PREVIOUSEDIT]     = ide.osname == "Macintosh" and "Ctrl-Alt-Left" or "Alt-Left",
   [ID.NEXTEDIT]         = ide.osname == "Macintosh" and "Ctrl-Alt-Right" or "Alt-Right",
   [ID.RENAMEALLINSTANCES] = "",

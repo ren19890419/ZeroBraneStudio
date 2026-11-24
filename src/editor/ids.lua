@@ -203,6 +203,8 @@ ID_NOTEBOOKTABNEXT  = NewID()
 ID_NOTEBOOKTABPREV  = NewID()
 ID_PREVIOUSEDIT     = NewID()
 ID_NEXTEDIT         = NewID()
+ID_JUMPBACK         = NewID()
+ID_JUMPFORWARD      = NewID()
 
 local ids = {}
 function IDgen (name)
