@@ -4,6 +4,7 @@ local entries, selected = {}, nil
 local jumps, jumpIndex = {}, 0
 local histories = {entries, jumps}
 local historyLimit = 100
+local menuLimit = 20
 
 local function fileKey(path)
   if not path then return end
@@ -77,8 +78,8 @@ local function navigateEdit(direction)
   end
 end
 
-local function jumpCandidate(direction)
-  local index = jumpIndex + direction
+local function jumpCandidate(direction, from)
+  local index = (from or jumpIndex) + direction
   while jumps[index] do
     local entry = jumps[index]
     if entry.editor or entry.path then return index end
@@ -86,21 +87,70 @@ local function jumpCandidate(direction)
   end
 end
 
+local function jumpTo(index, entry)
+  if not entry or jumps[index] ~= entry then return false end
+  if visit(entry) then
+    jumpIndex = index
+    return true
+  end
+  -- The file has disappeared. Leave the other jump indices in place.
+  entry.editor, entry.path = nil, nil
+  return false
+end
+
 local function navigateJump(direction)
   local index = jumpCandidate(direction)
   while index do
-    local entry = jumps[index]
-    if visit(entry) then
-      jumpIndex = index
-      return
-    end
-    -- The file has disappeared. Leave the other jump indices in place.
-    entry.editor, entry.path = nil, nil
-    index = jumpCandidate(direction)
+    if jumpTo(index, jumps[index]) then return end
+    index = jumpCandidate(direction, index)
   end
 end
 
-ide:AddPackage("core.navigation", {
+local function createJumpHistoryMenu(direction)
+  local locations, names = {}, {}
+  local index = jumpCandidate(direction)
+  while index and #locations < menuLimit do
+    local entry = jumps[index]
+    local doc = entry.editor and ide:IsValidCtrl(entry.editor) and ide:GetDocument(entry.editor)
+    local path = doc and doc:GetFilePath() or entry.path
+    if path or doc then
+      local name = path and wx.wxFileName(path):GetFullName() or doc:GetFileName() or ide:GetDefaultFileName()
+      local key, identity = fileKey(name), fileKey(path) or entry.editor
+      local sameName = names[key]
+      if sameName then
+        sameName.ambiguous = sameName.ambiguous or sameName.identity ~= identity
+      else
+        names[key] = {identity = identity}
+      end
+      locations[#locations + 1] = {index = index, entry = entry, path = path, name = name, key = key}
+    end
+    index = jumpCandidate(direction, index)
+  end
+  if #locations == 0 then return end
+
+  local menu = wx.wxMenu()
+  local project = ide:GetProject()
+  for row, location in ipairs(locations) do
+    local name = location.name
+    if location.path and names[location.key].ambiguous then
+      local file = wx.wxFileName(location.path)
+      if project then file:MakeRelativeTo(project) end
+      name = file:GetFullPath()
+    end
+    local id = ID("navigation.jump.history."..row)
+    local label = ("%s:%d"):format(name:gsub("[\t\r\n]", " "):gsub("&", "&&"), location.entry.line + 1)
+    menu:Append(id, label, location.path or "")
+    menu:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function()
+      if not jumpTo(location.index, location.entry) then
+        ide:SetStatusFor(TR("This jump location is no longer available."))
+      end
+    end)
+  end
+  return menu
+end
+
+local navigation = ide:AddPackage("core.navigation", {
+  CreateJumpHistoryMenu = function(self, direction) return createJumpHistoryMenu(direction) end,
   RecordJump = function(self, editor, position, target, targetPosition)
     if editor == target and position == targetPosition then return end
     for index = #jumps, jumpIndex + 1, -1 do jumps[index] = nil end
@@ -209,8 +259,16 @@ for _, id in ipairs({ID.PREVIOUSEDIT, ID.NEXTEDIT}) do
   frame:Connect(id, wx.wxEVT_UPDATE_UI, function(event) event:Enable(editCandidate(direction) ~= nil) end)
 end
 
+local toolbar = ide:GetToolBar()
 for _, id in ipairs({ID.JUMPBACK, ID.JUMPFORWARD}) do
   local direction = id == ID.JUMPBACK and -1 or 1
   frame:Connect(id, wx.wxEVT_COMMAND_MENU_SELECTED, function() navigateJump(direction) end)
   frame:Connect(id, wx.wxEVT_UPDATE_UI, function(event) event:Enable(jumpCandidate(direction) ~= nil) end)
+  toolbar:Connect(id, wxaui.wxEVT_COMMAND_AUITOOLBAR_TOOL_DROPDOWN, function(event)
+    if not event:IsDropDownClicked() then event:Skip(); return end
+    local popup = navigation:CreateJumpHistoryMenu(direction)
+    if not popup then return end
+    toolbar:PopupMenu(popup, toolbar:GetToolRect(id):GetBottomLeft())
+    popup:delete()
+  end)
 end

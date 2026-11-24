@@ -147,6 +147,10 @@ local function createToolBar(frame)
       end
     end)
 
+  for _, id in ipairs({ID.JUMPBACK, ID.JUMPFORWARD}) do
+    if toolBar:FindTool(id) then toolBar:SetToolDropDown(id, true) end
+  end
+
   toolBar:GetArtProvider():SetElementSize(wxaui.wxAUI_TBART_GRIPPER_SIZE, 0)
   toolBar:Realize()
 

@@ -214,6 +214,7 @@ return {
   ["&Navigate"] = "导航",
   ["Navigate Back"] = "跳转后退",
   ["Navigate Forward"] = "跳转前进",
+  ["This jump location is no longer available."] = "此跳转位置已不可用。",
   ["Previous Edit Position"] = "上一次编辑位置",
   ["Next Edit Position"] = "下一次编辑位置",
   ["No definition found."] = "未找到定义。",

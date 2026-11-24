@@ -11,6 +11,11 @@ local function enabled(id)
   frame:GetEventHandler():ProcessEvent(event)
   return event:GetEnabled()
 end
+local function selectRow(menu, row)
+  local id = menu:FindItemByPosition(row):GetId()
+  menu:ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, id))
+  menu:delete()
+end
 
 is(ide:GetHotKey("F12"), ID.GOTODEFINITION, "F12 invokes Go To Definition.")
 is(ide:GetHotKey("Alt-F12"), ID.FOLD, "Fold All remains available on Alt+F12.")
@@ -22,6 +27,10 @@ ok(toolbar:FindTool(ID.PREVIOUSEDIT) and toolbar:FindTool(ID.NEXTEDIT),
   "The main toolbar has Previous and Next Edit Position buttons.")
 ok(toolbar:FindTool(ID.JUMPBACK) and toolbar:FindTool(ID.JUMPFORWARD),
   "The main toolbar has Back and Forward jump buttons.")
+ok(toolbar:GetToolDropDown(ID.JUMPBACK) and toolbar:GetToolDropDown(ID.JUMPFORWARD),
+  "Both jump buttons have a split history dropdown.")
+ok(not toolbar:GetToolDropDown(ID.PREVIOUSEDIT) and not toolbar:GetToolDropDown(ID.NEXTEDIT),
+  "The edit position buttons are single actions.")
 ok(toolbar:GetToolIndex(ID.JUMPFORWARD) + 1 < toolbar:GetToolIndex(ID.PREVIOUSEDIT),
   "A separator divides the toolbar's jump and edit navigation buttons.")
 ok(toolbar:GetToolShortHelp(ID.JUMPBACK):find(TR("Navigate Back"), 1, true)
@@ -47,8 +56,19 @@ is(ide:GetEditor(), second, "Next Edit Position returns to the more recent edit 
 is(second:GetCurrentPos(), second:GetLength(), "Next Edit Position restores the edit's caret position.")
 
 local nav = ide:GetPackage("core.navigation")
+ide:GetDocument(first):SetFileName("first.lua")
+ide:GetDocument(second):SetFileName("second.lua")
 nav:RecordJump(first, 2, second, 4)
-nav:RecordJump(second, 4, first, 8)
+nav:RecordJump(second, 4, first, first:GetLength())
+local back = nav:CreateJumpHistoryMenu(-1)
+is(back:GetMenuItemCount(), 2, "The Back history contains both earlier jumps.")
+is(back:FindItemByPosition(0):GetItemLabelText(), "second.lua:1", "The closest Back location appears first.")
+selectRow(back, 1)
+is(first:GetCurrentPos(), 2, "Choosing an older dropdown row jumps directly to its position.")
+local forward = nav:CreateJumpHistoryMenu(1)
+is(forward:FindItemByPosition(1):GetItemLabelText(), "first.lua:2", "History displays one-based line numbers.")
+selectRow(forward, 1)
+is(first:GetCurrentPos(), first:GetLength(), "The Forward dropdown restores the exact destination.")
 toolbar:UpdateWindowUI(wx.wxUPDATE_UI_FROMIDLE)
 ok(toolbar:GetToolEnabled(ID.JUMPBACK) and not toolbar:GetToolEnabled(ID.JUMPFORWARD),
   "Only the Back toolbar button is enabled at the newest jump.")
@@ -73,6 +93,9 @@ local function close(editor)
   document:Close()
 end
 close(second)
+local remaining = nav:CreateJumpHistoryMenu(-1)
+is(remaining:GetMenuItemCount(), 1, "History omits locations from closed untitled tabs.")
+remaining:delete()
 command(ID.JUMPBACK)
 is(first:GetCurrentPos(), 2, "Back skips a closed jump location that never had a file path.")
 command(ID.JUMPFORWARD)
