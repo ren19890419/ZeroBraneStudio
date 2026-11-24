@@ -1,6 +1,10 @@
 local frame = ide:GetMainFrame()
-local function command(id)
-  frame:GetEventHandler():ProcessEvent(wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, id))
+local toolbar = ide:GetToolBar()
+local function command(id, source)
+  source = source or frame
+  local event = wx.wxCommandEvent(wx.wxEVT_COMMAND_MENU_SELECTED, id)
+  event:SetEventObject(source)
+  source:GetEventHandler():ProcessEvent(event)
 end
 local function enabled(id)
   local event = wx.wxUpdateUIEvent(id)
@@ -14,8 +18,18 @@ is(ide:GetHotKey("Ctrl--"), ID.JUMPBACK, "Ctrl+minus navigates backward through 
 is(ide:GetHotKey("Ctrl-Shift--"), ID.JUMPFORWARD, "Ctrl+Shift+minus navigates forward through jumps.")
 is(ide:GetHotKey("Ctrl-Alt--"), ID.ZOOMOUT, "Zoom Out has a separate shortcut.")
 ok(not enabled(ID.JUMPBACK) and not enabled(ID.JUMPFORWARD), "Jump history starts empty.")
-ok(ide:GetToolBar():FindTool(ID.PREVIOUSEDIT) and ide:GetToolBar():FindTool(ID.NEXTEDIT),
+ok(toolbar:FindTool(ID.PREVIOUSEDIT) and toolbar:FindTool(ID.NEXTEDIT),
   "The main toolbar has Previous and Next Edit Position buttons.")
+ok(toolbar:FindTool(ID.JUMPBACK) and toolbar:FindTool(ID.JUMPFORWARD),
+  "The main toolbar has Back and Forward jump buttons.")
+ok(toolbar:GetToolIndex(ID.JUMPFORWARD) + 1 < toolbar:GetToolIndex(ID.PREVIOUSEDIT),
+  "A separator divides the toolbar's jump and edit navigation buttons.")
+ok(toolbar:GetToolShortHelp(ID.JUMPBACK):find(TR("Navigate Back"), 1, true)
+  and toolbar:GetToolShortHelp(ID.JUMPFORWARD):find(TR("Navigate Forward"), 1, true),
+  "Jump toolbar buttons identify their commands in the tooltips.")
+toolbar:UpdateWindowUI(wx.wxUPDATE_UI_FROMIDLE)
+ok(not toolbar:GetToolEnabled(ID.JUMPBACK) and not toolbar:GetToolEnabled(ID.JUMPFORWARD),
+  "Jump toolbar buttons are disabled when the history is empty.")
 
 local first = NewFile()
 first:AppendTextDyn("local first = 1\n")
@@ -35,12 +49,17 @@ is(second:GetCurrentPos(), second:GetLength(), "Next Edit Position restores the 
 local nav = ide:GetPackage("core.navigation")
 nav:RecordJump(first, 2, second, 4)
 nav:RecordJump(second, 4, first, 8)
-command(ID.JUMPBACK)
+toolbar:UpdateWindowUI(wx.wxUPDATE_UI_FROMIDLE)
+ok(toolbar:GetToolEnabled(ID.JUMPBACK) and not toolbar:GetToolEnabled(ID.JUMPFORWARD),
+  "Only the Back toolbar button is enabled at the newest jump.")
+command(ID.JUMPBACK, toolbar)
 is(ide:GetEditor(), second, "Back after consecutive jumps opens the intermediate tab.")
 is(second:GetCurrentPos(), 4, "Back restores the intermediate jump position.")
+toolbar:UpdateWindowUI(wx.wxUPDATE_UI_FROMIDLE)
+ok(toolbar:GetToolEnabled(ID.JUMPFORWARD), "The Forward toolbar button enables after going back.")
 command(ID.JUMPBACK)
 is(first:GetCurrentPos(), 2, "Two Back commands restore the original jump position.")
-command(ID.JUMPFORWARD)
+command(ID.JUMPFORWARD, toolbar)
 is(second:GetCurrentPos(), 4, "Forward retraces the definition jump without adding history.")
 nav:RecordJump(second, 4, first, 10)
 ok(not enabled(ID.JUMPFORWARD), "A new jump discards the former forward branch.")
