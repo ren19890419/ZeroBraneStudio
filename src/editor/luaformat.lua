@@ -14,30 +14,55 @@ local function mapPosition(pos, edits, afterInsertion)
   return pos + shift
 end
 
+local function applyFormatting(editor, edits)
+  local anchor, caret = editor:GetAnchor(), editor:GetCurrentPos()
+  local restoreSelection = not editor:SelectionIsRectangle()
+    and (ide.wxver < "2.9.5" or editor:GetSelections() == 1)
+  local first = math.min(anchor, caret)
+  local startsAtLine = first == editor:PositionFromLine(editor:LineFromPosition(first))
+  local ok, err = client:ApplyTextEdits(editor, edits)
+  if ok and restoreSelection then
+    editor:SetCurrentPos(mapPosition(caret, edits, caret >= anchor or not startsAtLine))
+    editor:SetAnchor(mapPosition(anchor, edits, anchor >= caret or not startsAtLine))
+  end
+  return ok, err
+end
+
 local function format(editor, selection)
   if not client:Format(editor, selection, function(edits, err)
     if err then ide:SetStatusFor(err, 5); return end
     if #edits == 0 then ide:SetStatusFor(TR("LuaLS returned no formatting changes.")); return end
 
-    local anchor, caret = editor:GetAnchor(), editor:GetCurrentPos()
-    local restoreSelection = not editor:SelectionIsRectangle()
-      and (ide.wxver < "2.9.5" or editor:GetSelections() == 1)
-    local first = math.min(anchor, caret)
-    local startsAtLine = first == editor:PositionFromLine(editor:LineFromPosition(first))
-    local ok, problem = client:ApplyTextEdits(editor, edits)
+    local ok, problem = applyFormatting(editor, edits)
     if not ok then
       ide:Print(problem)
       ide:SetStatusFor(TR("Could not apply Lua formatting."), 5)
       return
     end
-    if restoreSelection then
-      editor:SetCurrentPos(mapPosition(caret, edits, caret >= anchor or not startsAtLine))
-      editor:SetAnchor(mapPosition(anchor, edits, anchor >= caret or not startsAtLine))
-    end
     ide:SetStatusFor(selection and TR("Formatted Lua selection.") or TR("Formatted Lua file."))
   end) then return end
   ide:SetStatusFor(TR("Formatting Lua code..."), 5)
 end
+
+ide:AddPackage("core.luaformat", {
+  BeforeSave = function(self, editor, path)
+    if not client:GetFormatOnSave() then return end
+    local ok, problem = pcall(function()
+      local edits, err = client:FormatForSave(editor, path)
+      if not edits or #edits == 0 then return err end
+      local applied, applyError = applyFormatting(editor, edits)
+      if not applied then
+        ide:Print(applyError)
+        return TR("Could not apply Lua formatting.")
+      end
+    end)
+    if not ok then
+      ide:Print(problem)
+      problem = TR("Could not apply Lua formatting.")
+    end
+    if problem then ide:SetStatusFor(TR("Formatting on save skipped (%s)"):format(problem:gsub("[\r\n]+", " ")), 5) end
+  end,
+})
 
 local function currentEditor() return ide:GetEditorWithFocus() or ide:GetEditor() end
 local menu = ide:FindMenuItem(ID.SOURCE):GetSubMenu()

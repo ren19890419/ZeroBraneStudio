@@ -305,9 +305,9 @@ ide:GetCodePage() -- populate the codepage value if auto-detection is requested
 
 local readonce = 4096
 local maxread = readonce * 10 -- maximum number of bytes to read before pausing
-local function getStreams(all)
+local function getStreams(all, pid)
   local function readStream(tab)
-    for _,v in pairs(tab) do
+    for _,v in pairs(pid and {tab[pid]} or tab) do
       -- periodically stop reading to get a chance to process other events
       local processed = 0
       while (v.check(v.proc) and (all or processed <= maxread)) do
@@ -365,11 +365,11 @@ local function getStreams(all)
 
   readStream(streamins)
   readStream(streamerrs)
-  sendStream(streamouts)
+  if not pid then sendStream(streamouts) end
 end
 
-function out:ProcessStreams()
-  if (#streamins or #streamerrs) then getStreams() end
+function out:ProcessStreams(pid)
+  getStreams(false, pid)
 end
 
 out:Connect(wx.wxEVT_END_PROCESS, function(event)

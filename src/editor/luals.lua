@@ -27,6 +27,10 @@ local function absolute(file)
   return file:GetFullPath()
 end
 
+local function projectKey(project)
+  return pathKey(absolute(wx.wxFileName.DirName(project))):gsub("/+$", "").."/"
+end
+
 local function send(s, message)
   if not s.queue then return end
   message.jsonrpc = "2.0"
@@ -62,7 +66,7 @@ end
 
 local function reset(s)
   session = nil
-  s.pending = nil
+  s.pending, s.saveRequest = nil, nil
   problems:ClearDiagnostics(source)
   if not ide:IsExiting() then PackageEventHandle("onLuaLSStop") end
 end
@@ -104,6 +108,13 @@ local function nextVersion(s, key)
   return version
 end
 
+local function openDocument(s, path, text)
+  local doc = {key = pathKey(path), path = path, uri = lsp.fileUri(path), text = text}
+  notify(s, "textDocument/didOpen", {textDocument = {uri = doc.uri, languageId = "lua",
+    text = text, version = nextVersion(s, doc.key)}})
+  return doc
+end
+
 local function syncDocument(s, editor)
   if not s.ready then return end
   local document = ide:GetDocument(editor)
@@ -121,10 +132,8 @@ local function syncDocument(s, editor)
   local text = editor:GetTextDyn()
   s.dirty[editor] = nil
   if not current then
-    current = {key = key, path = path, uri = lsp.fileUri(path), text = text}
+    current = openDocument(s, path, text)
     s.documents[editor], s.byPath[key] = current, editor
-    notify(s, "textDocument/didOpen", {textDocument = {uri = current.uri, languageId = "lua",
-      text = text, version = nextVersion(s, key)}})
   elseif current.text ~= text and s.change ~= 0 then
     local change = {text = text}
     if s.change == 2 then
@@ -144,6 +153,12 @@ local function position(s, editor, pos)
   return {line = line, character = lsp.endPosition(prefix, s.encoding).character}
 end
 
+local function submitRequest(s, slot, method, editor, params, done)
+  s.requestId = s.requestId + 1
+  s[slot] = {id = s.requestId, method = method, editor = editor, deadline = ide:GetTime() + 20, done = done}
+  send(s, {id = s.requestId, method = method, params = params})
+end
+
 local function request(s, method, editor, pos, params, done)
   cancelRequest(s, TR("The previous Lua request was canceled."))
   for changed in pairs(s.dirty) do
@@ -153,10 +168,59 @@ local function request(s, method, editor, pos, params, done)
   if not doc then return false end
   params.textDocument = {uri = doc.uri}
   if pos then params.position = position(s, editor, pos) end
-  s.requestId = s.requestId + 1
-  s.pending = {id = s.requestId, method = method, editor = editor, deadline = ide:GetTime() + 20, done = done}
-  send(s, {id = s.requestId, method = method, params = params})
+  submitRequest(s, "pending", method, editor, params, done)
   return true
+end
+
+local function formattingOptions(editor)
+  local useTabs = editor:GetUseTabs()
+  local width = useTabs and editor:GetTabWidth() or editor:GetIndent()
+  return {tabSize = math.max(1, width > 0 and width or editor:GetTabWidth()), insertSpaces = not useTabs}
+end
+
+local function formattingEdits(s, text, result, first, last)
+  if result == nil or result == lsp.null then return {} end
+  local edits, problem = lsp.formatEdits(text, result, s.encoding, first, last)
+  if edits then return edits end
+  return nil, problem == "range" and TR("LuaLS could not format these lines without changing surrounding code.")
+    or TR("LuaLS returned invalid formatting edits.")
+end
+
+local function waitForSaveFormatting(s, editor, doc)
+  local result, err, completed
+  local ok, error = pcall(function()
+    local watch = wx.wxStopWatch()
+    submitRequest(s, "saveRequest", formatMethod, editor,
+      {textDocument = {uri = doc.uri}, options = formattingOptions(editor)}, function(value, problem)
+        result, err, completed = value, problem, true
+      end)
+
+    -- SaveFile returns only after writing. Pump this server's pipes without dispatching UI or other tasks.
+    while not completed and s == session and watch:Time() < 1500 do
+      s.flush()
+      ide:GetOutput():ProcessStreams(s.pid)
+      if not completed then
+        if not wx.wxProcess.Exists(s.pid) then break end
+        wx.wxMilliSleep(5)
+      end
+    end
+  end)
+  if s.saveRequest then
+    local id = s.saveRequest.id
+    s.saveRequest = nil
+    notify(s, "$/cancelRequest", {id = id})
+  end
+  if not ok then
+    report(tostring(error))
+    return nil, TR("Lua formatting is unavailable.")
+  end
+  if not completed then
+    if s ~= session or not wx.wxProcess.Exists(s.pid) then return nil, TR("Lua formatting is unavailable.") end
+    -- Keep Save All from waiting on every file when the server is already stalled.
+    s.saveRetryAt = ide:GetTime() + 3
+    return nil, TR("Lua formatting timed out.")
+  end
+  return result, err
 end
 
 local function selectionRange(s, editor)
@@ -258,6 +322,11 @@ local function receive(s, message)
     return
   end
   local method, params = message.method, message.params
+  local pending
+  if not method then
+    if s.pending and message.id == s.pending.id then pending = s.pending; s.pending = nil
+    elseif s.saveRequest and message.id == s.saveRequest.id then pending = s.saveRequest; s.saveRequest = nil end
+  end
   if not method and message.id == 1 then
     local result = message.result
     if message.error or type(result) ~= "table" or type(result.capabilities) ~= "table" then
@@ -279,9 +348,7 @@ local function receive(s, message)
     s.ready = true
     notify(s, "initialized", lsp.object())
     for _, doc in pairs(ide:GetDocuments()) do syncDocument(s, doc:GetEditor()) end
-  elseif not method and s.pending and message.id == s.pending.id then
-    local pending = s.pending
-    s.pending = nil
+  elseif pending then
     if message.error then
       local err = type(message.error) == "table" and message.error.message
       pending.done(nil, type(err) == "string" and err or TR("The Lua language server request failed."))
@@ -321,7 +388,7 @@ local function start(project, executable)
   if root == "" then root = "/" end
   local uri = lsp.fileUri(root)
   local directories = folder:GetDirs()
-  local s = {prefix = pathKey(root):gsub("/?$", "/"), documents = {}, byPath = {}, versions = {}, dirty = {},
+  local s = {prefix = projectKey(project), documents = {}, byPath = {}, versions = {}, dirty = {},
     folders = {{uri = uri, name = directories[#directories] or root}},
     deadline = ide:GetTime() + 20, requestId = 2}
   local decode = lsp.decoder(function(message) receive(s, message) end)
@@ -401,6 +468,20 @@ local client = ide:AddPackage("core.luals", {
   IsEnabled = function(self)
     return self:GetSettings().enabled ~= false and type(self:GetExecutable()) == "string"
   end,
+  GetFormatOnSave = function(self, project)
+    project = project or ide:GetProject()
+    local projects = self:GetSettings().formatOnSave
+    return project ~= nil and type(projects) == "table" and projects[projectKey(project)] == true or false
+  end,
+  SetFormatOnSave = function(self, enabled, project)
+    project = project or ide:GetProject()
+    if not project then return end
+    local settings = self:GetSettings()
+    local projects = type(settings.formatOnSave) == "table" and settings.formatOnSave or {}
+    projects[projectKey(project)] = enabled and true or nil
+    settings.formatOnSave = next(projects) and projects or nil
+    self:SetSettings(settings)
+  end,
   CanFindReferences = function(self, editor)
     local s = session
     return s and s.canFindReferences and s.documents[editor] ~= nil or false
@@ -438,9 +519,7 @@ local client = ide:AddPackage("core.luals", {
     if not self:CanFormat(editor, selection) then return false end
     local s = session
     local doc, text = s.documents[editor], editor:GetTextDyn()
-    local useTabs = editor:GetUseTabs()
-    local params = {options = {tabSize = math.max(1, useTabs and editor:GetTabWidth() or editor:GetIndent()),
-      insertSpaces = not useTabs}}
+    local params = {options = formattingOptions(editor)}
     local first, last
     if selection then params.range, first, last = selectionRange(s, editor) end
     return request(s, selection and rangeFormatMethod or formatMethod, editor, nil, params, function(result, err)
@@ -449,12 +528,36 @@ local client = ide:AddPackage("core.luals", {
         done(nil, TR(formatChanged))
         return
       end
-      if result == nil or result == lsp.null then done({}); return end
-      local edits, problem = lsp.formatEdits(text, result, s.encoding, first, last)
-      if edits then done(edits)
-      elseif problem == "range" then done(nil, TR("LuaLS could not format these lines without changing surrounding code."))
-      else done(nil, TR("LuaLS returned invalid formatting edits.")) end
+      done(formattingEdits(s, text, result, first, last))
     end)
+  end,
+  FormatForSave = function(self, editor, path)
+    local project = ide:GetProject()
+    local document = ide:GetDocument(editor)
+    if not project or not document or editor:GetReadOnly() then return end
+    path = absolute(wx.wxFileName(path))
+    local key, prefix = pathKey(path), projectKey(project)
+    if key:sub(1, #prefix) ~= prefix then return end
+    local current = document:GetFilePath()
+    local samePath = current and pathKey(current) == key
+    local spec = samePath and editor.spec or ide:FindSpec(GetFileExt(path), editor:GetLineDyn(0))
+    if not spec or spec.apitype ~= "lua" then return end
+
+    local s = session
+    if not s or not s.canFormat then return nil, TR("Lua formatting is unavailable.") end
+    if s.saveRequest or s.saveRetryAt and ide:GetTime() < s.saveRetryAt then return end
+    if s.byPath[key] and s.byPath[key] ~= editor then return end
+    local text = editor:GetTextDyn()
+    local doc = samePath and syncDocument(s, editor)
+    local temporary = not doc
+    if temporary then doc = openDocument(s, path, text) end
+    if s.pending and s.pending.editor == editor
+    and (s.pending.method == formatMethod or s.pending.method == rangeFormatMethod) then cancelRequest(s) end
+    local result, err = waitForSaveFormatting(s, editor, doc)
+    if temporary and s == session then notify(s, "textDocument/didClose", {textDocument = {uri = doc.uri}}) end
+    if err then return nil, err end
+    if editor:GetTextDyn() ~= text then return nil, TR(formatChanged) end
+    return formattingEdits(s, text, result)
   end,
   ApplyTextEdits = function(self, editor, edits)
     local before = editor:GetTextDyn()
@@ -525,10 +628,13 @@ local client = ide:AddPackage("core.luals", {
 
 local menuId, chooseId, enableId, restartId = ID("project.luals"), ID("project.luals.choose"),
   ID("project.luals.enable"), ID("project.luals.restart")
+local formatOnSaveId = ID("project.luals.formatonsave")
 local menu = ide:MakeMenu {
   {chooseId, TR("Choose Server Executable...")},
   {enableId, TR("Enable Lua Language Server"), "", wx.wxITEM_CHECK},
   {restartId, TR("Restart Language Server")},
+  {},
+  {formatOnSaveId, TR("Format Lua on Save"), "", wx.wxITEM_CHECK},
 }
 ide:FindTopMenu("&Project"):Append(menuId, TR("Lua Language Server"), menu)
 
@@ -552,4 +658,11 @@ end)
 frame:Connect(restartId, wx.wxEVT_COMMAND_MENU_SELECTED, function() client:Restart() end)
 frame:Connect(restartId, wx.wxEVT_UPDATE_UI, function(event)
   event:Enable(client:IsEnabled() and ide:GetProject() ~= nil)
+end)
+frame:Connect(formatOnSaveId, wx.wxEVT_COMMAND_MENU_SELECTED, function(event)
+  client:SetFormatOnSave(event:IsChecked())
+end)
+frame:Connect(formatOnSaveId, wx.wxEVT_UPDATE_UI, function(event)
+  event:Enable(ide:GetProject() ~= nil)
+  event:Check(client:GetFormatOnSave())
 end)

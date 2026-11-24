@@ -283,6 +283,8 @@ function SaveFile(editor, filePath)
   if not filePath then
     return SaveFileAs(editor)
   else
+    local formatter = ide:GetPackage("core.luaformat")
+    if formatter then formatter:BeforeSave(editor, filePath) end
     if ide.config.savebak then
       local ok, err = FileRename(filePath, filePath..".bak")
       if not ok then

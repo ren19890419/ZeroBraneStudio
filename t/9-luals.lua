@@ -88,6 +88,15 @@ if ide then
   local client = ide:GetPackage("core.luals")
   ok(client:IsEnabled() == (client:GetExecutable() ~= nil and client:GetSettings().enabled ~= false),
     "The LuaLS client reports whether an executable is enabled.")
+  local firstProject, secondProject = "t/luals-format-setting-a", "t/luals-format-setting-b"
+  local previous = client:GetFormatOnSave(firstProject)
+  client:SetFormatOnSave(true, firstProject)
+  ok(client:GetFormatOnSave(firstProject), "Lua format on save is enabled for the selected project.")
+  ok(client:GetFormatOnSave(firstProject.."/"), "A trailing separator does not change the project's formatting setting.")
+  ok(not client:GetFormatOnSave(secondProject), "Enabling format on save does not affect another project.")
+  client:SetFormatOnSave(false, firstProject)
+  ok(not client:GetFormatOnSave(firstProject), "A project can turn Lua format on save back off.")
+  client:SetFormatOnSave(previous, firstProject)
   local problems = ide:GetPackage("core.problems")
   local path = "C:/project with spaces/lsp-test.lua"
   local diagnostic = {file = path, line = 1, column = 4, message = "test", severity = "information"}
