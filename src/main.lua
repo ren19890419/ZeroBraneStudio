@@ -602,7 +602,7 @@ for _, file in ipairs({
     "gui", "filetree", "output", "debugger", "outline", "commandbar",
     "editor", "findreplace", "commands", "autocomplete", "shellbox", "markers",
     "menu_file", "menu_edit", "menu_search", "menu_view", "menu_project", "menu_help",
-    "print", "inspect", "problems", "runprofiles", "luals", "luareferences", "luarename", "luaformat",
+    "print", "inspect", "problems", "runprofiles", "luals", "luareferences", "luarename", "luaformat", "navigation",
     "testexplorer", "gitview" }) do
   dofile("src/editor/"..file..".lua")
 end
@@ -715,7 +715,7 @@ for lid in pairs(remap) do
 end
 
 -- these shortcuts need accelerators handling as they are not present anywhere in the menu
-for _, id in ipairs({ ID.GOTODEFINITION, ID.RENAMEALLINSTANCES,
+for _, id in ipairs({ ID.RENAMEALLINSTANCES,
     ID.REPLACEALLSELECTIONS, ID.QUICKADDWATCH, ID.QUICKEVAL, ID.ADDTOSCRATCHPAD}) do
   local ksc = ide.config.keymap[id]
   if ksc and ksc > "" then

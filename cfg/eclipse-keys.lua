@@ -25,7 +25,7 @@ local map = {
   [ID.AUTOCOMPLETEENABLE] = "",
   [ID.COMMENT]          = "Ctrl-/",
   ---
-  [ID.FOLD]             = "F12",
+  [ID.FOLD]             = "Alt-F12",
   [ID.FOLDLINE]         = "Shift-F12",
   ---
   [ID.CLEARDYNAMICWORDS] = "",

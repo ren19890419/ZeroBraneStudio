@@ -75,6 +75,7 @@ function LoadFile(filePath, editor, file_must_exist, skipselection)
 
   local current = editor and editor:GetCurrentPos()
   editor = editor or findUnusedEditor() or CreateEditor()
+  editor.loadingFile = true
   editor:Freeze()
   editor:SetupKeywords(GetFileExt(filePath))
   editor:MarkerDeleteAll(-1)
@@ -150,6 +151,7 @@ function LoadFile(filePath, editor, file_must_exist, skipselection)
     -- restore the changes in the editor,
     -- as it may be applied to some other content, for example, in preview
     editor:Undo()
+    editor.loadingFile = nil
     ide:ReportError(TR("Can't open file '%s': %s"):format(filePath, err))
     return nil
   end
@@ -197,6 +199,7 @@ function LoadFile(filePath, editor, file_must_exist, skipselection)
 
   doc:SetModified(false)
   doc:SetTabText(doc:GetFileName())
+  editor.loadingFile = nil
 
   -- activate the editor; this is needed for those cases when the editor is
   -- created from some other element, for example, from a project tree.

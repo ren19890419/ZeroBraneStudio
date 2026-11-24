@@ -1,4 +1,3 @@
-local lsp = require "lsp"
 local ide = ide
 local client = ide:GetPackage("core.luals")
 local findId, contextId, viewId = ID("search.luals.references"), ID("editor.luals.references"),
@@ -57,13 +56,7 @@ list:Connect(wx.wxEVT_COMMAND_LIST_ITEM_ACTIVATED, function(event)
   local index = event:GetIndex()
   if index < 0 then index = list:GetNextItem(-1, wx.wxLIST_NEXT_ALL, wx.wxLIST_STATE_SELECTED) end
   local location = locations[index + 1]
-  if not location then return end
-  local editor = ide:LoadFile(location.path, nil, true)
-  if not ide:IsValidCtrl(editor) then return end
-  local line = math.min(location.line, editor:GetLineCount() - 1)
-  local start = editor:PositionFromLine(line)
-  local text = editor:GetTextRangeDyn(start, editor:GetLineEndPosition(line))
-  editor:GotoPosDelayed(start + lsp.byteOffset(text, location.character, location.encoding))
+  if location then client:OpenLocation(location) end
 end)
 
 ide:AddPackage("core.luareferences", {

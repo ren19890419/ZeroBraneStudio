@@ -7,6 +7,8 @@ ide.config.toolbar = ide.config.toolbar or {}
 ide.config.toolbar.icons = {
   ID.NEW, ID.OPEN, ID.SAVE, ID.SAVEALL, ID.PROJECTDIRFROMFILE, ID.PROJECTDIRCHOOSE,
   ID.SEPARATOR,
+  ID.PREVIOUSEDIT, ID.NEXTEDIT,
+  ID.SEPARATOR,
   ID.FIND, ID.REPLACE, ID.FINDINFILES,
   ID.SEPARATOR,
   ID.RUN, ID.STARTDEBUG, ID.RUNNOW, ID.STOPDEBUG, ID.DETACHDEBUG, ID.BREAK,
@@ -24,6 +26,8 @@ ide.config.toolbar.iconmap = {
   [ID.SAVEALL] = {"FILE-SAVE-ALL", TR("Save all open documents")},
   [ID.PROJECTDIRFROMFILE]= {"DIR-SETUP-FILE", TR("Set project directory from current file")},
   [ID.PROJECTDIRCHOOSE] = {"DIR-SETUP", TR("Choose a project directory")},
+  [ID.PREVIOUSEDIT] = {wx.wxART_GO_BACK, TR("Previous Edit Position")},
+  [ID.NEXTEDIT] = {wx.wxART_GO_FORWARD, TR("Next Edit Position")},
   [ID.FIND] = {"FIND", TR("Find text")},
   [ID.REPLACE] = {"FIND-AND-REPLACE", TR("Find and replace text")},
   [ID.FINDINFILES] = {"FIND-IN-FILES", TR("Find in files")},

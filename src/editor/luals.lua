@@ -8,14 +8,20 @@ local session, timer
 local stopping = {}
 local severity = {"error", "warning", "information", "hint"}
 local referencesMethod, renameMethod = "textDocument/references", "textDocument/rename"
+local definitionMethod = "textDocument/definition"
 local formatMethod, rangeFormatMethod = "textDocument/formatting", "textDocument/rangeFormatting"
 local timeoutMessages = {
   [referencesMethod] = "Finding Lua references timed out.",
+  [definitionMethod] = "Finding the Lua definition timed out.",
   [renameMethod] = "Previewing the Lua rename timed out.",
   [formatMethod] = "Lua formatting timed out.",
   [rangeFormatMethod] = "Lua formatting timed out.",
 }
 local formatChanged = "The Lua document changed. Run formatting again."
+local documentChangedMessages = {
+  [referencesMethod] = "The Lua document changed. Find references again.",
+  [definitionMethod] = "The Lua document changed. Find the definition again.",
+}
 
 local function pathKey(path)
   path = path:gsub("\\", "/")
@@ -59,8 +65,7 @@ local function documentChanged(s, editor)
   if pending.method == renameMethod then
     cancelRequest(s, TR("A Lua document changed. Preview the rename again."))
   elseif pending.editor == editor then
-    cancelRequest(s, pending.method == referencesMethod and TR("The Lua document changed. Find references again.")
-      or TR(formatChanged))
+    cancelRequest(s, TR(documentChangedMessages[pending.method] or formatChanged))
   end
 end
 
@@ -258,11 +263,14 @@ local function publish(s, params)
   problems:SetDiagnostics(source, path, entries)
 end
 
-local function referenceLocations(s, result)
+local function locations(s, result)
+  if type(result) ~= "table" then return {} end
+  if result.uri or result.targetUri then result = {result} end
   local results, seen = {}, {}
-  for _, location in ipairs(type(result) == "table" and result or {}) do
-    local path = type(location) == "table" and lsp.filePath(location.uri, windows)
-    local start = path and type(location.range) == "table" and location.range.start
+  for _, location in ipairs(result) do
+    local path = type(location) == "table" and lsp.filePath(location.targetUri or location.uri, windows)
+    local range = path and (location.targetSelectionRange or location.range or location.targetRange)
+    local start = type(range) == "table" and range.start
     if lsp.validPosition(start) then
       path = absolute(wx.wxFileName(path))
       local key = pathKey(path)
@@ -276,6 +284,11 @@ local function referenceLocations(s, result)
       end
     end
   end
+  return results
+end
+
+local function referenceLocations(s, result)
+  local results = locations(s, result)
   table.sort(results, function(a, b)
     if a.key ~= b.key then return a.key < b.key end
     if a.line ~= b.line then return a.line < b.line end
@@ -342,6 +355,7 @@ local function receive(s, message)
     s.change = type(sync) == "table" and (sync.change or 0) or tonumber(sync) or 0
     s.save = type(sync) == "table" and sync.save
     s.canFindReferences = hasProvider(caps.referencesProvider)
+    s.canGoToDefinition = hasProvider(caps.definitionProvider)
     s.canRename = hasProvider(caps.renameProvider)
     s.canFormat = hasProvider(caps.documentFormattingProvider)
     s.canFormatRange = hasProvider(caps.documentRangeFormattingProvider)
@@ -425,7 +439,7 @@ local function start(project, executable)
     clientInfo = {name = "ZeroBrane Studio"},
     capabilities = {general = {positionEncodings = {"utf-16"}},
       workspace = {workspaceFolders = true, configuration = true},
-      textDocument = {publishDiagnostics = {versionSupport = true}}},
+      textDocument = {publishDiagnostics = {versionSupport = true}, definition = {linkSupport = true}}},
   }})
 end
 
@@ -492,6 +506,26 @@ local client = ide:AddPackage("core.luals", {
     return request(s, referencesMethod, editor, pos, {context = {includeDeclaration = true}}, function(result, err)
       if err then done(nil, err) else done(referenceLocations(s, result)) end
     end)
+  end,
+  CanGoToDefinition = function(self, editor)
+    local s = session
+    return s and s.canGoToDefinition and s.documents[editor] ~= nil or false
+  end,
+  FindDefinition = function(self, editor, pos, done)
+    if not self:CanGoToDefinition(editor) then return false end
+    local s = session
+    return request(s, definitionMethod, editor, pos, {}, function(result, err)
+      if err then done(nil, err) else done(locations(s, result)) end
+    end)
+  end,
+  OpenLocation = function(self, location)
+    local editor = ide:LoadFile(location.path, nil, true)
+    if not ide:IsValidCtrl(editor) then return false end
+    local line = math.min(location.line, editor:GetLineCount() - 1)
+    local start = editor:PositionFromLine(line)
+    local text = editor:GetTextRangeDyn(start, editor:GetLineEndPosition(line))
+    editor:GotoPosDelayed(start + lsp.byteOffset(text, location.character, location.encoding))
+    return true
   end,
   CanRename = function(self, editor)
     local s = session
@@ -561,6 +595,8 @@ local client = ide:AddPackage("core.luals", {
   end,
   ApplyTextEdits = function(self, editor, edits)
     local before = editor:GetTextDyn()
+    local applying = editor.applyingTextEdits
+    editor.applyingTextEdits = true
     editor:BeginUndoAction()
     local ok, err = pcall(function()
       for index = #edits, 1, -1 do
@@ -572,6 +608,7 @@ local client = ide:AddPackage("core.luals", {
     end)
     editor:EndUndoAction()
     if not ok and editor:GetTextDyn() ~= before then editor:Undo() end
+    editor.applyingTextEdits = applying
     return ok, err
   end,
   Restart = function(self)

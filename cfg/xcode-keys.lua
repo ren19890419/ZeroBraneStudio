@@ -24,7 +24,7 @@ local map = {
   [ID.AUTOCOMPLETE]     = "Ctrl-K",
   [ID.AUTOCOMPLETEENABLE] = "",
   [ID.COMMENT]          = "Ctrl-U",
-  [ID.FOLD]             = "F12",
+  [ID.FOLD]             = "Alt-F12",
   [ID.CLEARDYNAMICWORDS] = "",
 -- Search menu
   [ID.FIND]             = "Ctrl-F",

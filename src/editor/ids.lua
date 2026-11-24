@@ -201,6 +201,8 @@ ID_RECENTSCOPECLEAR = NewID()
 -- global shortcuts
 ID_NOTEBOOKTABNEXT  = NewID()
 ID_NOTEBOOKTABPREV  = NewID()
+ID_PREVIOUSEDIT     = NewID()
+ID_NEXTEDIT         = NewID()
 
 local ids = {}
 function IDgen (name)

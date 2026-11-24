@@ -1008,7 +1008,7 @@ function CreateEditor(bare)
       local deleted = bit.band(evtype, wxstc.wxSTC_MOD_DELETETEXT) ~= 0
       if (inserted or deleted) then
         SetAutoRecoveryMark()
-        PackageEventHandle("onEditorChange", editor)
+        PackageEventHandle("onEditorChange", editor, pos, event:GetLength(), inserted, evtype)
 
         local linesChanged = inserted and event:GetLinesAdded() or 0
         -- collate events if they are for the same line
@@ -1536,8 +1536,8 @@ function CreateEditor(bare)
   end
 
   local pos
-  local function getPositionValues()
-    local p = pos or editor:GetCurrentPos()
+  local function getPositionValues(position)
+    local p = position or pos or editor:GetCurrentPos()
     local value = p ~= wxstc.wxSTC_INVALID_POSITION and editor:ValueFromPosition(p) or nil
     local instances = value and indicateFindInstances(editor, value, p+1)
     return p, value, instances
@@ -1598,15 +1598,32 @@ function CreateEditor(bare)
     end)
 
   editor:Connect(ID.GOTODEFINITION, wx.wxEVT_UPDATE_UI, function(event)
+      local client = ide:GetPackage("core.luals")
+      if client and client:CanGoToDefinition(editor) then event:Enable(true); return end
       local _, _, instances = getPositionValues()
-      event:Enable(instances and instances[0])
+      event:Enable(instances and instances[0] ~= nil or false)
     end)
   editor:Connect(ID.GOTODEFINITION, wx.wxEVT_COMMAND_MENU_SELECTED,
-    function(event)
-      local _, value, instances = getPositionValues()
-      if value and instances[0] then
-        navigateToPosition(editor, editor:GetCurrentPos(), instances[0]-1, #value)
+    function()
+      local caret = editor:GetCurrentPos()
+      local position = pos or caret
+      if position == wxstc.wxSTC_INVALID_POSITION then return end
+      local function fallback()
+        local _, value, instances = getPositionValues(position)
+        if instances and instances[0] then
+          navigateToPosition(editor, caret, instances[0]-1, #value)
+        else ide:SetStatusFor(TR("No definition found.")) end
       end
+      local client = ide:GetPackage("core.luals")
+      if client and client:FindDefinition(editor, position, function(targets, err)
+        if ide:GetEditor() ~= editor or editor:GetCurrentPos() ~= caret then return end
+        if err then ide:SetStatusFor(err, 5); return end
+        for _, target in ipairs(targets) do
+          if client:OpenLocation(target) then return end
+        end
+        fallback()
+      end) then return end
+      fallback()
     end)
 
   editor:Connect(ID.RENAMEALLINSTANCES, wx.wxEVT_UPDATE_UI, function(event)

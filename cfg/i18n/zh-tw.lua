@@ -211,6 +211,12 @@ return {
   ["Found match in '%s'."] = "在 '%s' 找到相符", -- src\editor\findreplace.lua
   ["Full &Screen"] = "全螢幕", -- src\editor\menu_view.lua
   ["Go To Definition"] = "前往定義", -- src\editor\editor.lua
+  ["&Navigate"] = "導覽",
+  ["Previous Edit Position"] = "上一次編輯位置",
+  ["Next Edit Position"] = "下一次編輯位置",
+  ["No definition found."] = "找不到定義。",
+  ["Finding the Lua definition timed out."] = "尋找 Lua 定義逾時。",
+  ["The Lua document changed. Find the definition again."] = "Lua 文件已修改，請重新尋找定義。",
   ["Go To File..."] = "前往檔案...", -- src\editor\menu_search.lua
   ["Go To Line..."] = "前往行...", -- src\editor\menu_search.lua
   ["Go To Next Bookmark"] = "前往下一個書籤", -- src\editor\menu_edit.lua
