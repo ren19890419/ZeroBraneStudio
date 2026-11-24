@@ -14,6 +14,23 @@ is(messages[2].id, 1, "The decoder emits both messages in order.")
 local rejected = lsp.decoder(function() error("Invalid frames must not be dispatched.") end)
 ok(not rejected("Content-Length: 0\r\n\r\n"), "The decoder rejects an invalid content length.")
 
+local sent, space = "", 2
+local queue, flush = lsp.writer(function(chunk)
+  local count = math.min(#chunk, space)
+  sent, space = sent..chunk:sub(1, count), space - count
+  return count
+end)
+queue(diagnostic)
+queue(response)
+is(sent, diagnostic:sub(1, 2), "A short write keeps the unsent bytes queued.")
+space = #diagnostic + #response
+flush()
+is(sent, diagnostic..response, "Later messages wait for the partially written LSP frame.")
+queue("next")
+space = 4
+flush()
+is(sent, diagnostic..response.."next", "An empty queue can be reused after a flush.")
+
 local path = "C:/my project/#file%20.lua"
 is(lsp.fileUri(path), "file:///C:/my%20project/%23file%2520.lua", "LSP file URIs escape reserved characters.")
 is(lsp.filePath(lsp.fileUri(path), true), path, "Windows drive paths round trip through a file URI.")
@@ -22,6 +39,13 @@ ok(lsp.filePath("https://example.com/main.lua", true) == nil, "Non-file URIs are
 local ending = lsp.endPosition("first\r\nsecond\r\n\228\184\173\240\159\152\128", "utf-16")
 is(ending.line, 2, "Full-document changes count CRLF as one line ending.")
 is(ending.character, 3, "Full-document changes count supplementary characters as two UTF-16 units.")
+
+local line = "a\228\184\173\240\159\152\128x"
+is(lsp.byteOffset(line, 4, "utf-16"), 8, "Reference locations use UTF-16 columns by default.")
+is(lsp.byteOffset(line, 3, "utf-16"), 4, "Navigation never splits a surrogate pair.")
+is(lsp.byteOffset(line, 3, "utf-32"), 8, "Reference locations can use UTF-32 columns.")
+is(lsp.byteOffset(line, 7, "utf-8"), 4, "Navigation never splits a UTF-8 character.")
+is(lsp.byteOffset(line, 20, "utf-16"), #line, "A reference column beyond the line is clamped.")
 
 if ide then
   local client = ide:GetPackage("core.luals")

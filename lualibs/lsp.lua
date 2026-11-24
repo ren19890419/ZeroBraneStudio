@@ -11,6 +11,29 @@ function lsp.frame(message)
   return ("Content-Length: %d\r\n\r\n%s"):format(#body, body)
 end
 
+function lsp.writer(write)
+  local pending, first, offset = {}, 1, 1
+  local function flush()
+    local budget = 64 * 1024
+    while first <= #pending and budget > 0 do
+      local data = pending[first]
+      local chunk = data:sub(offset, offset + math.min(budget, 16 * 1024) - 1)
+      local count = write(chunk)
+      if count == 0 then return end
+      offset, budget = offset + count, budget - count
+      if offset > #data then
+        pending[first], first, offset = false, first + 1, 1
+      end
+    end
+    if first > #pending then pending, first = {}, 1 end
+  end
+  local function queue(data)
+    pending[#pending + 1] = data
+    if first == #pending then flush() end
+  end
+  return queue, flush
+end
+
 function lsp.decoder(onMessage)
   local header, remaining, parts = "", nil, nil
   return function(data)
@@ -90,6 +113,17 @@ function lsp.endPosition(text, encoding)
     end
   end
   return {line = line, character = character}
+end
+
+function lsp.byteOffset(line, character, encoding)
+  local offset = 0
+  for codepoint in line:gmatch("[^\128-\191][\128-\191]*") do
+    local bytes = #codepoint
+    local units = encoding == "utf-8" and bytes or encoding == "utf-16" and bytes == 4 and 2 or 1
+    if character < units then break end
+    offset, character = offset + bytes, character - units
+  end
+  return offset
 end
 
 return lsp

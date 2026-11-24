@@ -19,10 +19,9 @@ local function absolute(file)
 end
 
 local function send(s, message)
-  if not s.input then return end
+  if not s.queue then return end
   message.jsonrpc = "2.0"
-  local data = lsp.frame(message)
-  s.input:Write(data, #data)
+  s.queue(lsp.frame(message))
 end
 
 local function notify(s, method, params)
@@ -33,17 +32,32 @@ local function report(message)
   ide:Print(source..": "..message)
 end
 
+local function cancelReferences(s, reason)
+  local pending = s.references
+  if not pending then return end
+  s.references = nil
+  notify(s, "$/cancelRequest", {id = pending.id})
+  if reason then pending.done(nil, reason) end
+end
+
+local function reset(s)
+  session = nil
+  s.references = nil
+  problems:ClearDiagnostics(source)
+  if not ide:IsExiting() then PackageEventHandle("onLuaLSStop") end
+end
+
 local function closeInput(s)
   if not s.input then return end
-  s.input = nil
+  s.input, s.queue, s.flush = nil, nil, nil
   s.process:CloseOutput()
 end
 
 local function stop()
   local s = session
   if not s then return end
-  session = nil
-  problems:ClearDiagnostics(source)
+  cancelReferences(s)
+  reset(s)
   stopping[s.pid] = s
   s.deadline = ide:GetTime() + 1.5
   if s.ready then send(s, {id = 2, method = "shutdown"})
@@ -58,6 +72,9 @@ local function closeDocument(s, editor)
   local doc = s.documents[editor]
   s.dirty[editor] = nil
   if not doc then return end
+  if s.references and s.references.editor == editor then
+    cancelReferences(s, TR("The Lua document changed. Find references again."))
+  end
   s.documents[editor], s.byPath[doc.key] = nil, nil
   notify(s, "textDocument/didClose", {textDocument = {uri = doc.uri}})
   problems:SetDiagnostics(source, doc.path, {})
@@ -102,6 +119,12 @@ local function syncDocument(s, editor)
   return current
 end
 
+local function validPosition(pos)
+  return type(pos) == "table"
+    and type(pos.line) == "number" and pos.line >= 0 and pos.line % 1 == 0
+    and type(pos.character) == "number" and pos.character >= 0 and pos.character % 1 == 0
+end
+
 local function publish(s, params)
   if type(params) ~= "table" or type(params.diagnostics) ~= "table" then return end
   local path = lsp.filePath(params.uri, windows)
@@ -116,9 +139,7 @@ local function publish(s, params)
   local entries = {}
   for _, diagnostic in ipairs(params.diagnostics) do
     local start = type(diagnostic) == "table" and type(diagnostic.range) == "table" and diagnostic.range.start
-    if type(start) == "table" and type(diagnostic.message) == "string"
-    and type(start.line) == "number" and start.line >= 0 and start.line % 1 == 0
-    and type(start.character) == "number" and start.character >= 0 and start.character % 1 == 0 then
+    if validPosition(start) and type(diagnostic.message) == "string" then
       local code = diagnostic.code
       local message = diagnostic.message
       if type(code) == "string" or type(code) == "number" then message = message.." ["..code.."]" end
@@ -127,6 +148,40 @@ local function publish(s, params)
     end
   end
   problems:SetDiagnostics(source, path, entries)
+end
+
+local function receiveReferences(s, message)
+  local pending = s.references
+  s.references = nil
+  if message.error then
+    local err = type(message.error) == "table" and message.error.message
+    pending.done(nil, type(err) == "string" and err or TR("The language server could not find references."))
+    return
+  end
+
+  local results, seen = {}, {}
+  for _, location in ipairs(type(message.result) == "table" and message.result or {}) do
+    local path = type(location) == "table" and lsp.filePath(location.uri, windows)
+    local start = path and type(location.range) == "table" and location.range.start
+    if validPosition(start) then
+      path = absolute(wx.wxFileName(path))
+      local key = pathKey(path)
+      local doc = s.documents[s.byPath[key]]
+      local line, character = start.line, start.character
+      local id = key.."\n"..line..":"..character
+      if not seen[id] then
+        seen[id] = true
+        results[#results + 1] = {path = doc and doc.path or path, key = key,
+          line = line, character = character, encoding = s.encoding}
+      end
+    end
+  end
+  table.sort(results, function(a, b)
+    if a.key ~= b.key then return a.key < b.key end
+    if a.line ~= b.line then return a.line < b.line end
+    return a.character < b.character
+  end)
+  pending.done(results)
 end
 
 local function receive(s, message)
@@ -152,9 +207,13 @@ local function receive(s, message)
     s.encoding = (encoding == "utf-8" or encoding == "utf-32") and encoding or "utf-16"
     s.change = type(sync) == "table" and (sync.change or 0) or tonumber(sync) or 0
     s.save = type(sync) == "table" and sync.save
+    s.canFindReferences = caps.referencesProvider == true
+      or type(caps.referencesProvider) == "table" and caps.referencesProvider ~= lsp.null
     s.ready = true
     notify(s, "initialized", lsp.object())
     for _, doc in pairs(ide:GetDocuments()) do syncDocument(s, doc:GetEditor()) end
+  elseif not method and s.references and message.id == s.references.id then
+    receiveReferences(s, message)
   elseif method == "textDocument/publishDiagnostics" then
     if s.ready then publish(s, params) end
   elseif method and message.id ~= nil then
@@ -190,7 +249,7 @@ local function start(project, executable)
   local directories = folder:GetDirs()
   local s = {prefix = pathKey(root):gsub("/?$", "/"), documents = {}, byPath = {}, versions = {}, dirty = {},
     folders = {{uri = uri, name = directories[#directories] or root}},
-    deadline = ide:GetTime() + 20}
+    deadline = ide:GetTime() + 20, requestId = 2}
   local decode = lsp.decoder(function(message) receive(s, message) end)
   local command = '"'..executable..'"'
   local pid, err, process = ide:ExecuteCommand(command, wx.wxFileName(executable):GetPath(),
@@ -201,8 +260,7 @@ local function start(project, executable)
     function(pid, code)
       stopping[pid] = nil
       if s ~= session then return end
-      session = nil
-      problems:ClearDiagnostics(source)
+      reset(s)
       if code ~= nil then
         report(TR("Language server exited (code %d)."):format(code))
         if s.stderr and s.stderr:match("%S") then report(s.stderr) end
@@ -214,6 +272,11 @@ local function start(project, executable)
     return
   end
   s.pid, s.process, s.input = pid, process, process:GetOutputStream()
+  -- A process pipe may accept only part of a frame, especially on Windows.
+  s.queue, s.flush = lsp.writer(function(chunk)
+    s.input:Write(chunk, #chunk)
+    return s.input:LastWrite()
+  end)
   session = s
   timer:Start(75)
   send(s, {id = 1, method = "initialize", params = {
@@ -233,14 +296,20 @@ timer = ide:AddTimer(frame, function()
       closeInput(s)
       if wx.wxProcess.Exists(pid) then wx.wxProcess.Kill(pid, wx.wxSIGKILL, wx.wxKILL_CHILDREN) end
       stopping[pid] = nil
+    elseif s.flush then
+      s.flush()
     end
   end
   local s = session
   if s then
+    if s.flush then s.flush() end
     if not s.ready and now >= s.deadline then
       report(TR("Language server initialization timed out."))
       stop()
     elseif s.ready then
+      if s.references and now >= s.references.deadline then
+        cancelReferences(s, TR("Finding Lua references timed out."))
+      end
       for editor, due in pairs(s.dirty) do
         if now >= due then syncDocument(s, editor) end
       end
@@ -257,6 +326,30 @@ local client = ide:AddPackage("core.luals", {
   end,
   IsEnabled = function(self)
     return self:GetSettings().enabled ~= false and type(self:GetExecutable()) == "string"
+  end,
+  CanFindReferences = function(self, editor)
+    local s = session
+    return s and s.canFindReferences and s.documents[editor] ~= nil or false
+  end,
+  FindReferences = function(self, editor, pos, done)
+    if not self:CanFindReferences(editor) then return false end
+    local s = session
+    cancelReferences(s)
+    for changed in pairs(s.dirty) do
+      if changed ~= editor then syncDocument(s, changed) end
+    end
+    local doc = syncDocument(s, editor)
+    if not doc then return false end
+    pos = math.max(0, math.min(pos, editor:GetLength()))
+    local line = editor:LineFromPosition(pos)
+    local prefix = editor:GetTextRangeDyn(editor:PositionFromLine(line), math.min(pos, editor:GetLineEndPosition(line)))
+    s.requestId = s.requestId + 1
+    s.references = {id = s.requestId, editor = editor, deadline = ide:GetTime() + 20, done = done}
+    send(s, {id = s.requestId, method = "textDocument/references", params = {
+      textDocument = {uri = doc.uri}, position = {line = line, character = lsp.endPosition(prefix, s.encoding).character},
+      context = {includeDeclaration = true},
+    }})
+    return true
   end,
   Restart = function(self)
     stop()
@@ -292,6 +385,9 @@ local client = ide:AddPackage("core.luals", {
     local s = session
     if s and s.documents[editor] then
       s.dirty[editor] = ide:GetTime() + 0.2
+      if s.references and s.references.editor == editor then
+        cancelReferences(s, TR("The Lua document changed. Find references again."))
+      end
     end
   end,
   onEditorSave = function(self, editor)
@@ -313,7 +409,7 @@ local menuId, chooseId, enableId, restartId = ID("project.luals"), ID("project.l
   ID("project.luals.enable"), ID("project.luals.restart")
 local menu = ide:MakeMenu {
   {chooseId, TR("Choose Server Executable...")},
-  {enableId, TR("Enable LuaLS Diagnostics"), "", wx.wxITEM_CHECK},
+  {enableId, TR("Enable Lua Language Server"), "", wx.wxITEM_CHECK},
   {restartId, TR("Restart Language Server")},
 }
 ide:FindTopMenu("&Project"):Append(menuId, TR("Lua Language Server"), menu)
