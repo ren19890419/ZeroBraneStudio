@@ -153,19 +153,9 @@ local function apply()
   end
 
   for i, file in ipairs(plan) do
-    local editor = editors[i]
-    editor:BeginUndoAction()
-    local ok, err = pcall(function()
-      for index = #file.edits, 1, -1 do
-        local edit = file.edits[index]
-        editor:SetTargetStart(edit.start)
-        editor:SetTargetEnd(edit.finish)
-        editor:ReplaceTargetDyn(edit.text)
-      end
-    end)
-    editor:EndUndoAction()
+    local ok, err = client:ApplyTextEdits(editors[i], file.edits)
     if not ok then
-      for applied = i, 1, -1 do
+      for applied = i - 1, 1, -1 do
         if editors[applied]:GetTextDyn() ~= plan[applied].text then editors[applied]:Undo() end
       end
       ide:Print(err)

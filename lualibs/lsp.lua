@@ -132,7 +132,7 @@ function lsp.byteOffset(line, character, encoding)
   return offset, character == 0
 end
 
-function lsp.textEdits(text, edits, encoding)
+function lsp.textEdits(text, edits, encoding, allowEndPastEOF)
   if type(edits) ~= "table" then return end
   local lines, first = {}, 1
   while true do
@@ -142,10 +142,13 @@ function lsp.textEdits(text, edits, encoding)
     first = eol + (text:sub(eol, eol + 1) == "\r\n" and 2 or 1)
   end
 
-  local function offset(pos)
+  local function offset(pos, allowPastEOF)
     if not lsp.validPosition(pos) then return end
     local line = lines[pos.line + 1]
-    if not line then return end
+    if not line then
+      if allowPastEOF and pos.line == #lines and pos.character == 0 then return #text, lines[#lines] end
+      return
+    end
     local bytes, exact = lsp.byteOffset(text:sub(line[1], line[2]), pos.character, encoding)
     if exact then return line[1] - 1 + bytes, line end
   end
@@ -154,7 +157,7 @@ function lsp.textEdits(text, edits, encoding)
   for _, edit in ipairs(edits) do
     if type(edit) ~= "table" or type(edit.range) ~= "table" or type(edit.newText) ~= "string" then return end
     local start, startLine = offset(edit.range.start)
-    local finish, endLine = offset(edit.range["end"])
+    local finish, endLine = offset(edit.range["end"], allowEndPastEOF)
     if not start or not finish or finish < start then return end
     result[#result + 1] = {start = start, finish = finish, text = edit.newText,
       line = edit.range.start.line, contextStart = startLine[1], contextEnd = endLine[2]}
@@ -166,6 +169,61 @@ function lsp.textEdits(text, edits, encoding)
   for i = 2, #result do
     local prev, edit = result[i - 1], result[i]
     if edit.start < prev.finish or edit.start == prev.start then return end
+  end
+  return result
+end
+
+local function addFormattingEdits(result, start, before, after)
+  if before == after then return end
+  if before:gsub("%s", "") ~= after:gsub("%s", "") then
+    result[#result + 1] = {start = start, finish = start + #before, text = after}
+    return
+  end
+
+  -- Keep unchanged code in place so Scintilla can track its carets and line markers.
+  local oldPos, newPos = 1, 1
+  local oldBoundary, newBoundary = 0, 0
+  while oldPos <= #before + 1 do
+    local oldCode = before:find("%S", oldPos) or #before + 1
+    local newCode = after:find("%S", newPos) or #after + 1
+    local oldSpace, newSpace = before:sub(oldPos, oldCode - 1), after:sub(newPos, newCode - 1)
+    if oldSpace ~= newSpace then
+      local head, tail = 0, 0
+      local shared = math.min(#oldSpace, #newSpace)
+      while head < shared and oldSpace:byte(head + 1) == newSpace:byte(head + 1) do head = head + 1 end
+      while tail < shared - head and oldSpace:byte(-tail - 1) == newSpace:byte(-tail - 1) do tail = tail + 1 end
+      result[#result + 1] = {start = start + oldPos - 1 + head, finish = start + oldCode - 1 - tail,
+        text = newSpace:sub(head + 1, #newSpace - tail)}
+    end
+    if oldCode > #before then break end
+    if oldBoundary <= oldCode then oldBoundary = before:find("%s", oldCode) or #before + 1 end
+    if newBoundary <= newCode then newBoundary = after:find("%s", newCode) or #after + 1 end
+    local count = math.min(oldBoundary - oldCode, newBoundary - newCode)
+    oldPos, newPos = oldCode + count, newCode + count
+  end
+end
+
+function lsp.formatEdits(text, edits, encoding, first, last)
+  -- LuaLS uses a virtual next line as the end of a range that reaches EOF.
+  local ranges = lsp.textEdits(text, edits, encoding, true)
+  if not ranges then return end
+  local result = {}
+  for _, edit in ipairs(ranges) do
+    local start, finish, replacement = edit.start, edit.finish, edit.text
+    local original = text:sub(start + 1, finish)
+    if original ~= replacement then
+      if first then
+        if finish < first or start > last or start == last and last < #text then return nil, "range" end
+        local head, tail = math.max(0, first - start), math.max(0, finish - last)
+        if head + tail > math.min(#original, #replacement) or original:sub(1, head) ~= replacement:sub(1, head)
+        or tail > 0 and original:sub(-tail) ~= replacement:sub(-tail) then return nil, "range" end
+        start, finish = start + head, finish - tail
+        original = original:sub(head + 1, #original - tail)
+        replacement = replacement:sub(head + 1, #replacement - tail)
+        if finish == last and last < #text and not replacement:find("[\r\n]$") then return nil, "range" end
+      end
+      addFormattingEdits(result, start, original, replacement)
+    end
   end
   return result
 end

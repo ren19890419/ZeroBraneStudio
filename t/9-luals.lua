@@ -65,6 +65,25 @@ ok(not lsp.textEdits("alpha", {edit(0, 0, 3, "a"), edit(0, 2, 5, "b")}, "utf-16"
 ok(not lsp.textEdits("alpha", {malformed = edit(0, 0, 3, "a")}, "utf-16"),
   "Rename rejects malformed edit arrays instead of silently skipping entries.")
 
+local function replacement(first, last, text)
+  return {range = {start = {line = first, character = 0}, ["end"] = {line = last, character = 0}}, newText = text}
+end
+
+local selection = "a=1\r\nb=2\r\nc=3"
+local formatting = lsp.formatEdits(selection, {replacement(0, 2, "a=1\r\nb = 2\r\n")}, "utf-16", 5, 10)
+is(formatting and #formatting, 2, "Formatting clips unchanged context and applies only the selected line's spaces.")
+is(formatting and formatting[1].start, 6, "Range formatting retains CRLF and uses the original byte positions.")
+ok(not lsp.formatEdits(selection, {replacement(0, 2, "a = 1\r\nb = 2\r\n")}, "utf-16", 5, 10),
+  "Range formatting rejects changes outside the selected lines.")
+ok(not lsp.formatEdits(selection, {replacement(1, 2, "b = 2")}, "utf-16", 5, 10),
+  "Range formatting cannot merge the next unselected line.")
+local eof = lsp.formatEdits(selection, {replacement(2, 3, "c = 3\r\n")}, "utf-16", 10, #selection)
+is(eof and eof[#eof].start, #selection, "LuaLS range formatting maps the virtual line after EOF to the file end.")
+is(eof and eof[#eof].text, "\r\n", "Range formatting can format the final line without an existing newline.")
+ok(not lsp.textEdits(selection, {replacement(2, 3, "c = 3")}, "utf-16"), "Rename ranges remain strict at EOF.")
+local indent = lsp.formatEdits("a\r\n  b", {replacement(0, 2, "a\r\n b")}, "utf-16")
+is(indent and indent[1].start, 4, "Formatting leaves unchanged line endings in place when updating indentation.")
+
 if ide then
   local client = ide:GetPackage("core.luals")
   ok(client:IsEnabled() == (client:GetExecutable() ~= nil and client:GetSettings().enabled ~= false),

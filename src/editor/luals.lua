@@ -8,6 +8,14 @@ local session, timer
 local stopping = {}
 local severity = {"error", "warning", "information", "hint"}
 local referencesMethod, renameMethod = "textDocument/references", "textDocument/rename"
+local formatMethod, rangeFormatMethod = "textDocument/formatting", "textDocument/rangeFormatting"
+local timeoutMessages = {
+  [referencesMethod] = "Finding Lua references timed out.",
+  [renameMethod] = "Previewing the Lua rename timed out.",
+  [formatMethod] = "Lua formatting timed out.",
+  [rangeFormatMethod] = "Lua formatting timed out.",
+}
+local formatChanged = "The Lua document changed. Run formatting again."
 
 local function pathKey(path)
   path = path:gsub("\\", "/")
@@ -47,7 +55,8 @@ local function documentChanged(s, editor)
   if pending.method == renameMethod then
     cancelRequest(s, TR("A Lua document changed. Preview the rename again."))
   elseif pending.editor == editor then
-    cancelRequest(s, TR("The Lua document changed. Find references again."))
+    cancelRequest(s, pending.method == referencesMethod and TR("The Lua document changed. Find references again.")
+      or TR(formatChanged))
   end
 end
 
@@ -128,6 +137,13 @@ local function syncDocument(s, editor)
   return current
 end
 
+local function position(s, editor, pos)
+  pos = math.max(0, math.min(pos, editor:GetLength()))
+  local line = editor:LineFromPosition(pos)
+  local prefix = editor:GetTextRangeDyn(editor:PositionFromLine(line), math.min(pos, editor:GetLineEndPosition(line)))
+  return {line = line, character = lsp.endPosition(prefix, s.encoding).character}
+end
+
 local function request(s, method, editor, pos, params, done)
   cancelRequest(s, TR("The previous Lua request was canceled."))
   for changed in pairs(s.dirty) do
@@ -135,15 +151,22 @@ local function request(s, method, editor, pos, params, done)
   end
   local doc = syncDocument(s, editor)
   if not doc then return false end
-  pos = math.max(0, math.min(pos, editor:GetLength()))
-  local line = editor:LineFromPosition(pos)
-  local prefix = editor:GetTextRangeDyn(editor:PositionFromLine(line), math.min(pos, editor:GetLineEndPosition(line)))
   params.textDocument = {uri = doc.uri}
-  params.position = {line = line, character = lsp.endPosition(prefix, s.encoding).character}
+  if pos then params.position = position(s, editor, pos) end
   s.requestId = s.requestId + 1
   s.pending = {id = s.requestId, method = method, editor = editor, deadline = ide:GetTime() + 20, done = done}
   send(s, {id = s.requestId, method = method, params = params})
   return true
+end
+
+local function selectionRange(s, editor)
+  local first = editor:LineFromPosition(editor:GetSelectionStart())
+  local last = editor:LineFromPosition(editor:GetSelectionEnd() - 1)
+  local start = editor:PositionFromLine(first)
+  local finish = last + 1 < editor:GetLineCount() and editor:PositionFromLine(last + 1) or editor:GetLength()
+  -- LuaLS interprets rangeFormatting's last line inclusively.
+  return {start = {line = first, character = 0}, ["end"] = position(s, editor, editor:GetLineEndPosition(last))},
+    start, finish
 end
 
 local function publish(s, params)
@@ -251,6 +274,8 @@ local function receive(s, message)
     s.save = type(sync) == "table" and sync.save
     s.canFindReferences = hasProvider(caps.referencesProvider)
     s.canRename = hasProvider(caps.renameProvider)
+    s.canFormat = hasProvider(caps.documentFormattingProvider)
+    s.canFormatRange = hasProvider(caps.documentRangeFormattingProvider)
     s.ready = true
     notify(s, "initialized", lsp.object())
     for _, doc in pairs(ide:GetDocuments()) do syncDocument(s, doc:GetEditor()) end
@@ -357,8 +382,7 @@ timer = ide:AddTimer(frame, function()
       stop()
     elseif s.ready then
       if s.pending and now >= s.pending.deadline then
-        cancelRequest(s, s.pending.method == renameMethod and TR("Previewing the Lua rename timed out.")
-          or TR("Finding Lua references timed out."))
+        cancelRequest(s, TR(timeoutMessages[s.pending.method]))
       end
       for editor, due in pairs(s.dirty) do
         if now >= due then syncDocument(s, editor) end
@@ -402,6 +426,50 @@ local client = ide:AddPackage("core.luals", {
   CancelRename = function()
     local s = session
     if s and s.pending and s.pending.method == renameMethod then cancelRequest(s) end
+  end,
+  CanFormat = function(self, editor, selection)
+    local s = session
+    if not (s and s.documents[editor]) or editor:GetReadOnly() then return false end
+    if not selection then return s.canFormat end
+    return s.canFormatRange and not editor:GetSelectionEmpty() and not editor:SelectionIsRectangle()
+      and (ide.wxver < "2.9.5" or editor:GetSelections() == 1)
+  end,
+  Format = function(self, editor, selection, done)
+    if not self:CanFormat(editor, selection) then return false end
+    local s = session
+    local doc, text = s.documents[editor], editor:GetTextDyn()
+    local useTabs = editor:GetUseTabs()
+    local params = {options = {tabSize = math.max(1, useTabs and editor:GetTabWidth() or editor:GetIndent()),
+      insertSpaces = not useTabs}}
+    local first, last
+    if selection then params.range, first, last = selectionRange(s, editor) end
+    return request(s, selection and rangeFormatMethod or formatMethod, editor, nil, params, function(result, err)
+      if err then done(nil, err); return end
+      if s.documents[editor] ~= doc or editor:GetReadOnly() or editor:GetTextDyn() ~= text then
+        done(nil, TR(formatChanged))
+        return
+      end
+      if result == nil or result == lsp.null then done({}); return end
+      local edits, problem = lsp.formatEdits(text, result, s.encoding, first, last)
+      if edits then done(edits)
+      elseif problem == "range" then done(nil, TR("LuaLS could not format these lines without changing surrounding code."))
+      else done(nil, TR("LuaLS returned invalid formatting edits.")) end
+    end)
+  end,
+  ApplyTextEdits = function(self, editor, edits)
+    local before = editor:GetTextDyn()
+    editor:BeginUndoAction()
+    local ok, err = pcall(function()
+      for index = #edits, 1, -1 do
+        local edit = edits[index]
+        editor:SetTargetStart(edit.start)
+        editor:SetTargetEnd(edit.finish)
+        editor:ReplaceTargetDyn(edit.text)
+      end
+    end)
+    editor:EndUndoAction()
+    if not ok and editor:GetTextDyn() ~= before then editor:Undo() end
+    return ok, err
   end,
   Restart = function(self)
     stop()
